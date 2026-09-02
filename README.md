@@ -34,7 +34,7 @@ All endpoints require an `Authorization` header with your token (`Authorization:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check: uptime, queue depth, MQL5 connection status, command wait timeout. Does **not** require `Authorization`. |
+| `/health` | GET | Health check: uptime, queue depth, MQL5 connection status. Does **not** require `Authorization`. |
 | `/version` | GET | Protocol version, e.g. `{"version":"1", ...}`. Does **not** require `Authorization`. |
 | `OPTIONS` (any path) | OPTIONS | CORS preflight. Returns `Allow: GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD`. `HEAD` is also supported. |
 
@@ -61,7 +61,7 @@ Common HTTP status codes include `401` (unauthorized), `413` (request too large)
 | `/symbols/{name}` | GET | Full symbol info including ask/bid prices, session_open, session_close, spread, swap_long, swap_short, digits, stops level, freeze level, exempt mode, filling mode |
 | `/tick/{symbol}` | GET | Latest tick: bid, ask, last, volume, time, time_msc, flags |
 | `/positions_pnl` | GET | Aggregate realized + unrealized PnL grouped per symbol (profit, swap) |
-| `/margin/{symbol}` | GET | Margin calculation (optional `volume` and `type` query params; default 0.01 buy) |
+| `/margin/{symbol}` | GET | Margin calculation (default: 0.01 buy lot) |
 | `/account_history` | GET | Account deals history: total PnL grouped by day, via `from`/`to` timestamps |
 
 ### Positions & Orders
