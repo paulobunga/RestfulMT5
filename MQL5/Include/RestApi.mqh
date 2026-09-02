@@ -81,7 +81,8 @@ private:
    string tradeCloseAll();
    string tradeCloseSymbol(string symbol);
    string tradeBatch(CJAVal &dataObject);
-private:
+   string getPing();
+ private:
    bool debug;
 };
 
@@ -137,6 +138,7 @@ void CRestApi::Processing(void) {
    
    if(r == 1) {
       command = CharArrayToString( _command );
+      ulong _t0 = GetTickCount64();
       Print("command: " + command);
       
       CJAVal jCommand;
@@ -264,6 +266,10 @@ if(id != NULL)
          response = tradeBatch(jCommand);
       }
 
+      if(action == "ping") {
+         response = getPing();
+      }
+
       //--- DELETE /orders/{id}
       if(action == "order_delete") {
          CJAVal *oid = jCommand.HasKey("id", jtSTR);
@@ -340,6 +346,10 @@ if(id != NULL)
          response = notImpemented(action);
       } 
       
+      ulong _elapsed = GetTickCount64() - _t0;
+      if(_elapsed > 3000)
+         Print("REST: slow command '" + action + "' took " + (string)_elapsed + " ms");
+
       StringToCharArray(response,_response);
       SetCommandResponse( _command, _response );
    }
@@ -428,6 +438,29 @@ string CRestApi::getBalanceInfo() {
    if(debug) Print(t);   
    
    return t;
+}
+
+//+------------------------------------------------------------------+
+//| Ping liveness endpoint                                            |
+//+------------------------------------------------------------------+
+string CRestApi::getPing() {
+   CJAVal out;
+   out["pong"]           = true;
+   out["time"]           = fromDateTime(TimeTradeServer());
+   out["timestamp"]      = (ulong)TimeCurrent();
+   out["terminal_build"] = (int)TerminalInfoInteger(TERMINAL_BUILD);
+   int deals  = 0, orders = 0;
+   if(HistorySelect(0, TimeCurrent())) {
+      deals  = HistoryDealsTotal();
+      orders = HistoryOrdersTotal();
+   }
+   out["deals_total"]     = deals;
+   out["orders_total"]    = orders;
+   out["positions_total"] = PositionsTotal();
+   out["server"]          = AccountInfoString(ACCOUNT_SERVER);
+   out["account"]         = (ulong)AccountInfoInteger(ACCOUNT_LOGIN);
+   out["version"]         = "1";
+   return out.Serialize();
 }
 
 //+------------------------------------------------------------------+
