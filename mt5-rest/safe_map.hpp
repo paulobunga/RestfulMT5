@@ -15,13 +15,14 @@ public:
 	~SafeMap() {}
 
 	void add(string key, string value);
-	string& operator[](const string key);
-	void remove(string key);
 	bool contains(string key);
+	void remove(string key);
+	bool try_get(const string &key, string &value);
+	bool wait_for(const string &key, string &value, int timeout_ms);
 
 private:
 	map<string,string> data;
-	mutex mut;
+	mutable mutex mut;
 	condition_variable cond;
 };
 
