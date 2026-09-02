@@ -15,6 +15,9 @@ using namespace http;
 
 static long long g_counter = 0;
 static std::mutex g_counter_mutex;
+static long long g_process_start_ticks = GetTickCount64();
+
+#define CMD_HEALTH L"health"
 
 utility::string_t MicroserviceController::makeRequestId() {
 	std::lock_guard<std::mutex> lock(g_counter_mutex);
@@ -44,7 +47,6 @@ void MicroserviceController::initRestOpHandlers() {
 }
 
 void MicroserviceController::pushCommand(string_t command, string_t options) {
-
 	web::json::value result = web::json::value::object();
 
 	result[U("command")] = web::json::value::string(command);
@@ -53,36 +55,104 @@ void MicroserviceController::pushCommand(string_t command, string_t options) {
 	commands.push_back(ws2s(result.serialize()));
 }
 
-const char* MicroserviceController::getCommand() {
-	string command;
-
+string MicroserviceController::popCommand() {
 	if (commands.size() < 1)
-		return NULL;
+		return string();
+	string cmd = commands.front();
+	commands.pop_front();
+	return cmd;
+}
 
-	command.append(commands.back());
-	commands.pop_back();
-
-	return command.c_str();
+size_t MicroserviceController::pendingCommands() {
+	return commands.size();
 }
 
 int MicroserviceController::hasCommands() {
-	return commands.size() > 0;
+	return pendingCommands() > 0;
 }
 
-
 void MicroserviceController::setCommandResponse(const char* command, const char* response) {
-	commandResponses[command] = response;
+	markMql5Connected();
+	commandResponses.add(command, response);
+}
+
+void MicroserviceController::markMql5Connected() {
+	std::lock_guard<std::mutex> lock(mql5_conn_mutex);
+	mql5_connected = true;
+}
+
+void MicroserviceController::applyCorsHeaders(http_response & response) {
+	response.headers().add(U("Access-Control-Allow-Origin"), U("*"));
+	response.headers().add(U("Access-Control-Allow-Methods"), U("GET, POST, PUT, PATCH, DELETE, OPTIONS"));
+	response.headers().add(U("Access-Control-Allow-Headers"), U("Content-Type, Authorization"));
+}
+
+http_response MicroserviceController::buildHealthResponse(bool mql5_connected, size_t queue_depth, long uptime_sec) {
+	web::json::value body = web::json::value::object();
+	body[U("status")] = web::json::value::string(U("ok"));
+	body[U("mql5_connected")] = web::json::value::boolean(mql5_connected);
+	body[U("queue_depth")] = web::json::value::number((int)queue_depth);
+	body[U("uptime_sec")] = web::json::value::number(uptime_sec);
+	http_response response(status_codes::OK);
+	applyCorsHeaders(response);
+	response.headers().add(U("Content-Type"), U("application/json"));
+	response.set_body(body);
+	return response;
+}
+
+http_response MicroserviceController::buildVersionResponse() {
+	web::json::value body = web::json::value::object();
+	body[U("version")] = web::json::value::string(protocolVersion());
+	body[U("code")] = web::json::value::number(200);
+	http_response response(status_codes::OK);
+	applyCorsHeaders(response);
+	response.headers().add(U("Content-Type"), U("application/json"));
+	response.set_body(body);
+	return response;
+}
+
+http_response MicroserviceController::formatStructuredError(int http_status, int code,
+	const utility::string_t & message, const utility::string_t & request_id) {
+	web::json::value body = web::json::value::object();
+	body[U("code")] = web::json::value::number(code);
+	body[U("message")] = web::json::value::string(message);
+	body[U("request_id")] = web::json::value::string(request_id);
+	http_response response(http_status);
+	applyCorsHeaders(response);
+	response.headers().add(U("Content-Type"), U("application/json"));
+	response.set_body(body);
+	return response;
+}
+
+bool MicroserviceController::waitForCommandResponse(const string & command, http_request & message,
+	const utility::string_t & request_id, bool & timed_out) {
+	if (command.size() > 7000) {
+		message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+			U("Command exceeds 7000 byte limit"), request_id));
+		return true;
+	}
+
+	string value;
+	if (commandResponses.wait_for(command, value, wait_timeout)) {
+		message.reply(status_codes::OK, value, "application/json");
+		commandResponses.remove(command);
+		timed_out = false;
+		return true;
+	}
+
+	timed_out = true;
+	return false;
 }
 
 void MicroserviceController::setCallback(const char* url, const char* format) {
 	callback_url.clear();
 	callback_format.clear();
 	callback_url.append(s2ws(url));
-	callback_format.append(s2ws(format));	
+	callback_format.append(s2ws(format));
 }
 
 void MicroserviceController::setCommandWaitTimeout(int timeout) {
-	wait_timeout = timeout*1000;
+	wait_timeout = timeout * 1000;
 }
 
 void MicroserviceController::setPath(const char *_path, const char* _url_swagger) {
@@ -94,7 +164,6 @@ void MicroserviceController::setPath(const char *_path, const char* _url_swagger
 }
 
 int MicroserviceController::onEvent(const char* data) {
-
 	if (callback_url.length() < 1)
 		return -1;
 
@@ -102,9 +171,7 @@ int MicroserviceController::onEvent(const char* data) {
 	http_client callback_client(callback_url);
 
 	try {
-
 		if (callback_format == L"json") {
-
 			task = callback_client.request(methods::POST, "", data);
 		}
 		else {
@@ -115,7 +182,6 @@ int MicroserviceController::onEvent(const char* data) {
 		}
 
 		task.then([](http_response response) {
-			//ucout << response.to_string();
 			if (response.status_code() == status_codes::OK) {
 				auto body = response.extract_string().get();
 				ucout << body << std::endl;
@@ -160,11 +226,45 @@ auto MicroserviceController::formatErrorRequired(utility::string_t field) {
 }
 
 void MicroserviceController::handleGet(http_request message) {
-	auto response = json::value::object();
+	auto start_ticks = GetTickCount64();
 	auto path = requestPath(message);
 	auto params = requestQueryParams(message);
 
 	try {
+		if (path.size() > 0 && path[0] == CMD_HEALTH) {
+			auto response = buildHealthResponse(mql5_connected, pendingCommands(),
+				(long)((GetTickCount64() - g_process_start_ticks) / 1000));
+			logRequest(message, 200, start_ticks);
+			message.reply(response);
+			return;
+		}
+
+		if (path.size() > 0 && path[0] == CMD_VERSION) {
+			auto response = buildVersionResponse();
+			logRequest(message, 200, start_ticks);
+			message.reply(response);
+			return;
+		}
+
+		if (path.size() > 0 && path[0] == CMD_DOCS) {
+			string p(path_docs);
+			p.append("docs.html");
+			std::ifstream in(p, ios::in);
+
+			http_response response(status_codes::OK);
+			response.headers().add(L"Content-Type", L"text/html; charset=UTF-8");
+			applyCorsHeaders(response);
+
+			std::stringstream buffer;
+			buffer << in.rdbuf();
+			string b = buffer.str();
+			in.close();
+
+			response.set_body(b);
+			logRequest(message, 200, start_ticks);
+			message.reply(response);
+			return;
+		}
 
 		if (path.size() < 1) {
 			string p(path_docs);
@@ -173,6 +273,7 @@ void MicroserviceController::handleGet(http_request message) {
 
 			http_response response(status_codes::OK);
 			response.headers().add(L"Content-Type", L"text/html; charset=UTF-8");
+			applyCorsHeaders(response);
 
 			std::stringstream buffer;
 			buffer << in.rdbuf();
@@ -180,6 +281,7 @@ void MicroserviceController::handleGet(http_request message) {
 			in.close();
 
 			response.set_body(b);
+			logRequest(message, 200, start_ticks);
 			message.reply(response);
 
 			return;
@@ -192,6 +294,7 @@ void MicroserviceController::handleGet(http_request message) {
 
 			http_response response(status_codes::OK);
 			response.headers().add(L"Content-Type", L"text/json; charset=UTF-8");
+			applyCorsHeaders(response);
 
 			std::stringstream buffer;
 			buffer << in.rdbuf();
@@ -201,14 +304,15 @@ void MicroserviceController::handleGet(http_request message) {
 			boost::algorithm::replace_all<string,string,string>(b, "localhost:6542", url_swagger);
 
 			response.set_body(b);
-
+			logRequest(message, 200, start_ticks);
 			message.reply(response);
-			
+
 			return;
 		}
 
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
+				logRequest(message, 401, start_ticks);
 				message.reply(status_codes::Unauthorized);
 				return;
 			}
@@ -216,12 +320,14 @@ void MicroserviceController::handleGet(http_request message) {
 			auto headers = message.headers();
 
 			if (headers[header_names::authorization] != token) {
+				logRequest(message, 401, start_ticks);
 				message.reply(status_codes::Unauthorized);
 				return;
 			}
 		}
 
 		web::json::value result = web::json::value::object();
+		auto request_id = makeRequestId();
 
 		result[L"command"] = web::json::value::string(path[0]);
 
@@ -233,60 +339,62 @@ void MicroserviceController::handleGet(http_request message) {
 			result[it->first] = web::json::value::string(it->second);
 		}
 
+		result[L"request_id"] = web::json::value::string(request_id);
+		result[L"version"] = web::json::value::string(protocolVersion());
+
 		string command = ws2s(result.serialize());
 		commands.push_back(command);
 
-		DWORD dw1 = GetTickCount();
-
-		while(dw1 + wait_timeout > GetTickCount()) {
-
-			if (commandResponses.contains(command)) {					
-				message.reply(status_codes::OK, commandResponses[command], "application/json");
-				commandResponses.remove(command);
-				return;
-			}
-
-			Sleep(1);
+		bool timed_out = false;
+		if (!waitForCommandResponse(command, message, request_id, timed_out)) {
+			logRequest(message, 504, start_ticks);
+			message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
+				U("Failed to get info, timeout"), request_id));
 		}
-
-		throw exception("Failed to get info, timeout");
+		else {
+			logRequest(message, 200, start_ticks);
+		}
 	}
 	catch (const FormatException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(405, e.what()));
 	}
 	catch (const RequiredException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(405, e.what()));
 	}
 	catch (const json::json_exception & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(410, e.what()));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
+		logRequest(message, 500, start_ticks);
 		message.reply(status_codes::InternalError);
 	}
 }
 
 void MicroserviceController::handlePost(http_request message) {
-	auto response = json::value::object();
+	auto start_ticks = GetTickCount64();
 
 	try {
-
 		auto path = requestPath(message);
 		auto params = requestQueryParams(message);
 
-		ucout << message.to_string() << endl;
-
 		if (path.size() < 1) {
+			logRequest(message, 404, start_ticks);
 			message.reply(status_codes::NotFound);
 			return;
 		}
 
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
+				logRequest(message, 401, start_ticks);
 				message.reply(status_codes::Unauthorized);
 				return;
 			}
@@ -294,6 +402,7 @@ void MicroserviceController::handlePost(http_request message) {
 			auto headers = message.headers();
 
 			if (headers[header_names::authorization] != token) {
+				logRequest(message, 401, start_ticks);
 				message.reply(status_codes::Unauthorized);
 				return;
 			}
@@ -303,111 +412,409 @@ void MicroserviceController::handlePost(http_request message) {
 			callback_url = params[U("callback_url")];
 			callback_format = params[U("callback_format")];
 
-			response[U("message")] = json::value::string(L"Succesfully subscribed");
+			web::json::value response = web::json::value::object();
+			response[U("message")] = json::value::string(L"Successfully subscribed");
 			response[U("code")] = json::value::number(200);
+			logRequest(message, 200, start_ticks);
 			message.reply(status_codes::OK, response);
 
 			return;
 		}
 
 		message.extract_utf8string(true).then([=](std::string body) {
-
 			if (body.length() < 1) {
 				throw exception("POST body is empty");
 			}
+
+			auto request_id = makeRequestId();
 
 			std::size_t pos = body.find("}");
 			std::string command = body.substr(0, pos);
 
 			command.append(",\"command\":\"");
 			command.append(ws2s(path[0]));
+			command.append("\"");
+
+			command.append(",\"request_id\":\"");
+			command.append(ws2s(request_id));
+			command.append("\"");
+
+			command.append(",\"version\":\"");
+			command.append(ws2s(protocolVersion()));
 			command.append("\"}");
 
 			commands.push_back(command);
 
-			for (int i = 0; i < wait_timeout; i++) {
-				if (commandResponses.contains(command)) {
-					message.reply(status_codes::OK, commandResponses[command], "application/json");
-					commandResponses.remove(command);
-					return;
-				}
-
-				Sleep(1);
+			bool timed_out = false;
+			if (!waitForCommandResponse(command, message, request_id, timed_out)) {
+				logRequest(message, 504, start_ticks);
+				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
+					U("Failed to get info, timeout"), request_id));
 			}
-
-			throw exception("Failed to get info, timeout");
+			else {
+				logRequest(message, 200, start_ticks);
+			}
 		}).wait();
 
 	}
 	catch (const ManagerException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
 	}
 	catch (const FormatException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(405, e.what()));
 	}
 	catch (const RequiredException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(405, e.what()));
 	}
 	catch (const json::json_exception & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(410, e.what()));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
+		logRequest(message, 500, start_ticks);
 		message.reply(status_codes::InternalError);
 	}
-
 }
 
 void MicroserviceController::handleDelete(http_request message) {
+	auto start_ticks = GetTickCount64();
+
 	try {
 		auto path = requestPath(message);
-		auto params = requestQueryParams(message);
 
 		if (path.size() < 1) {
+			logRequest(message, 404, start_ticks);
 			message.reply(status_codes::NotFound);
 			return;
 		}
 
-	} 
+		if (!token.empty()) {
+			if (!message.headers().has(header_names::authorization)) {
+				logRequest(message, 401, start_ticks);
+				message.reply(status_codes::Unauthorized);
+				return;
+			}
+
+			auto headers = message.headers();
+
+			if (headers[header_names::authorization] != token) {
+				logRequest(message, 401, start_ticks);
+				message.reply(status_codes::Unauthorized);
+				return;
+			}
+		}
+
+		auto request_id = makeRequestId();
+
+		if (path.size() >= 2 && path[0] == L"orders") {
+			web::json::value result = web::json::value::object();
+			result[L"command"] = web::json::value::string(L"order_delete");
+			result[L"id"] = web::json::value::string(path[1]);
+			result[L"request_id"] = web::json::value::string(request_id);
+			result[L"version"] = web::json::value::string(protocolVersion());
+
+			string command = ws2s(result.serialize());
+			commands.push_back(command);
+
+			bool timed_out = false;
+			if (!waitForCommandResponse(command, message, request_id, timed_out)) {
+				logRequest(message, 504, start_ticks);
+				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
+					U("Failed to get info, timeout"), request_id));
+			}
+			else {
+				logRequest(message, 200, start_ticks);
+			}
+			return;
+		}
+
+		if (path.size() >= 2 && path[0] == L"positions") {
+			web::json::value result = web::json::value::object();
+			result[L"command"] = web::json::value::string(L"position_delete");
+			result[L"id"] = web::json::value::string(path[1]);
+			result[L"request_id"] = web::json::value::string(request_id);
+			result[L"version"] = web::json::value::string(protocolVersion());
+
+			string command = ws2s(result.serialize());
+			commands.push_back(command);
+
+			bool timed_out = false;
+			if (!waitForCommandResponse(command, message, request_id, timed_out)) {
+				logRequest(message, 504, start_ticks);
+				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
+					U("Failed to get info, timeout"), request_id));
+			}
+			else {
+				logRequest(message, 200, start_ticks);
+			}
+			return;
+		}
+
+		logRequest(message, 404, start_ticks);
+		message.reply(status_codes::NotFound);
+	}
 	catch (const ManagerException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
 	}
 	catch (const FormatException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(405, e.what()));
 	}
 	catch (const RequiredException & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(405, e.what()));
 	}
 	catch (const json::json_exception & e) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(410, e.what()));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
+		logRequest(message, 400, start_ticks);
 		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
+		logRequest(message, 500, start_ticks);
+		message.reply(status_codes::InternalError);
+	}
+}
+
+void MicroserviceController::handlePut(http_request message) {
+	auto start_ticks = GetTickCount64();
+
+	try {
+		auto path = requestPath(message);
+
+		if (path.size() < 1) {
+			logRequest(message, 404, start_ticks);
+			message.reply(status_codes::NotFound);
+			return;
+		}
+
+		if (!token.empty()) {
+			if (!message.headers().has(header_names::authorization)) {
+				logRequest(message, 401, start_ticks);
+				message.reply(status_codes::Unauthorized);
+				return;
+			}
+
+			auto headers = message.headers();
+
+			if (headers[header_names::authorization] != token) {
+				logRequest(message, 401, start_ticks);
+				message.reply(status_codes::Unauthorized);
+				return;
+			}
+		}
+
+		auto request_id = makeRequestId();
+
+		message.extract_utf8string(true).then([=](std::string body) {
+			if (body.length() < 1) {
+				throw exception("PUT body is empty");
+			}
+
+			web::json::value result = web::json::value::object();
+			utility::string_t cmd_name;
+
+			if (path.size() >= 2 && path[0] == L"orders") {
+				cmd_name = L"order_modify";
+				result[L"command"] = web::json::value::string(cmd_name);
+				result[L"id"] = web::json::value::string(path[1]);
+			}
+			else if (path.size() >= 2 && path[0] == L"positions") {
+				cmd_name = L"position_modify";
+				result[L"command"] = web::json::value::string(cmd_name);
+				result[L"id"] = web::json::value::string(path[1]);
+			}
+			else {
+				throw exception("Unknown resource for PUT");
+			}
+
+			std::size_t pos = body.find("}");
+			string payload = body.substr(0, pos);
+			payload.append(",\"command\":\"");
+			payload.append(ws2s(cmd_name));
+			payload.append("\",\"id\":\"");
+			payload.append(ws2s(result[L"id"].as_string()));
+			payload.append("\",\"request_id\":\"");
+			payload.append(ws2s(request_id));
+			payload.append("\",\"version\":\"");
+			payload.append(ws2s(protocolVersion()));
+			payload.append("\"}");
+
+			commands.push_back(payload);
+
+			bool timed_out = false;
+			if (!waitForCommandResponse(payload, message, request_id, timed_out)) {
+				logRequest(message, 504, start_ticks);
+				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
+					U("Failed to get info, timeout"), request_id));
+			}
+			else {
+				logRequest(message, 200, start_ticks);
+			}
+		}).wait();
+
+	}
+	catch (const ManagerException & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
+	}
+	catch (const FormatException & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+	}
+	catch (const RequiredException & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+	}
+	catch (const json::json_exception & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		ucout << e.what() << endl;
+	}
+	catch (const std::exception & ex) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		ucout << ex.what() << endl;
+	}
+	catch (...) {
+		logRequest(message, 500, start_ticks);
+		message.reply(status_codes::InternalError);
+	}
+}
+
+void MicroserviceController::handlePatch(http_request message) {
+	auto start_ticks = GetTickCount64();
+
+	try {
+		auto path = requestPath(message);
+
+		if (path.size() < 1) {
+			logRequest(message, 404, start_ticks);
+			message.reply(status_codes::NotFound);
+			return;
+		}
+
+		if (!token.empty()) {
+			if (!message.headers().has(header_names::authorization)) {
+				logRequest(message, 401, start_ticks);
+				message.reply(status_codes::Unauthorized);
+				return;
+			}
+
+			auto headers = message.headers();
+
+			if (headers[header_names::authorization] != token) {
+				logRequest(message, 401, start_ticks);
+				message.reply(status_codes::Unauthorized);
+				return;
+			}
+		}
+
+		auto request_id = makeRequestId();
+
+		message.extract_utf8string(true).then([=](std::string body) {
+			if (body.length() < 1) {
+				throw exception("PATCH body is empty");
+			}
+
+			web::json::value result = web::json::value::object();
+			utility::string_t cmd_name;
+
+			if (path.size() >= 2 && path[0] == L"orders") {
+				cmd_name = L"order_modify";
+				result[L"command"] = web::json::value::string(cmd_name);
+				result[L"id"] = web::json::value::string(path[1]);
+			}
+			else if (path.size() >= 2 && path[0] == L"positions") {
+				cmd_name = L"position_modify";
+				result[L"command"] = web::json::value::string(cmd_name);
+				result[L"id"] = web::json::value::string(path[1]);
+			}
+			else {
+				throw exception("Unknown resource for PATCH");
+			}
+
+			std::size_t pos = body.find("}");
+			string payload = body.substr(0, pos);
+			payload.append(",\"command\":\"");
+			payload.append(ws2s(cmd_name));
+			payload.append("\",\"id\":\"");
+			payload.append(ws2s(result[L"id"].as_string()));
+			payload.append("\",\"request_id\":\"");
+			payload.append(ws2s(request_id));
+			payload.append("\",\"version\":\"");
+			payload.append(ws2s(protocolVersion()));
+			payload.append("\"}");
+
+			commands.push_back(payload);
+
+			bool timed_out = false;
+			if (!waitForCommandResponse(payload, message, request_id, timed_out)) {
+				logRequest(message, 504, start_ticks);
+				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
+					U("Failed to get info, timeout"), request_id));
+			}
+			else {
+				logRequest(message, 200, start_ticks);
+			}
+		}).wait();
+
+	}
+	catch (const ManagerException & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
+	}
+	catch (const FormatException & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+	}
+	catch (const RequiredException & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+	}
+	catch (const json::json_exception & e) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		ucout << e.what() << endl;
+	}
+	catch (const std::exception & ex) {
+		logRequest(message, 400, start_ticks);
+		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		ucout << ex.what() << endl;
+	}
+	catch (...) {
+		logRequest(message, 500, start_ticks);
 		message.reply(status_codes::InternalError);
 	}
 }
 
 void MicroserviceController::handleHead(http_request message) {
-	auto response = json::value::object();
-	response[U("version")] = json::value::string(U("0.1.1"));
-	response[U("code")] = json::value::number(200);
-	message.reply(status_codes::OK, "version");
+	auto start_ticks = GetTickCount64();
+	auto response = buildVersionResponse();
+	logRequest(message, 200, start_ticks);
+	message.reply(response);
 }
 
 void MicroserviceController::handleOptions(http_request message) {
+	auto start_ticks = GetTickCount64();
 	http_response response(status_codes::OK);
-	response.headers().add(U("Allow"), U("GET, POST, OPTIONS"));
-	response.headers().add(U("Access-Control-Allow-Origin"), U("*"));
-	response.headers().add(U("Access-Control-Allow-Methods"), U("GET, POST, OPTIONS"));
-	response.headers().add(U("Access-Control-Allow-Headers"), U("Content-Type"));
+	applyCorsHeaders(response);
+	response.headers().add(U("Allow"), U("GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD"));
+	logRequest(message, 200, start_ticks);
 	message.reply(response);
 }
 
@@ -423,21 +830,25 @@ void MicroserviceController::handleMerge(http_request message) {
 	message.reply(status_codes::NotImplemented, responseNotImpl(methods::MERGE));
 }
 
-void MicroserviceController::handlePatch(http_request message) {
-	message.reply(status_codes::NotImplemented, responseNotImpl(methods::MERGE));
-}
-
-void MicroserviceController::handlePut(http_request message) {
-	message.reply(status_codes::NotImplemented, responseNotImpl(methods::MERGE));
-}
-
 json::value MicroserviceController::responseNotImpl(const http::method & method) {
-
 	using namespace json;
 
 	auto response = value::object();
-	response[U("serviceName")] = value::string(U("MT4 REST"));
+	response[U("serviceName")] = value::string(U("MT5 REST"));
 	response[U("http_method")] = value::string(method);
 
 	return response;
+}
+
+void MicroserviceController::logRequest(const http_request & request, int status, long long start_ticks) {
+	long long duration = GetTickCount64() - start_ticks;
+	auto path = requestPath(request);
+	utility::string_t path_str;
+	for (size_t i = 0; i < path.size(); i++) {
+		if (i > 0) path_str += U("/");
+		path_str += path[i];
+	}
+	if (path_str.empty()) path_str = U("/");
+	ucout << request.method() << U(" ") << path_str << U(" ") << status
+		<< U(" ") << duration << U("ms") << std::endl;
 }

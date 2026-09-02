@@ -50,7 +50,6 @@ public:
 	auto formatError(int code, const char* message);
 	auto formatErrorRequired(utility::string_t field);
 
-	const char* getCommand();
 	void setCommandResponse(const char* command, const char* reponse);
 	void pushCommand(string_t command, string_t options);
 	int hasCommands();
@@ -63,10 +62,26 @@ public:
 		token.append(s2ws(_token));
 	};
 
+	string popCommand();
+	size_t pendingCommands();
+
 private:
+	bool mql5_connected = false;
+	std::mutex mql5_conn_mutex;
+
 	static json::value responseNotImpl(const http::method & method);
 	static utility::string_t makeRequestId();
 	static const utility::string_t protocolVersion();
+	static void applyCorsHeaders(http_response & response);
+	static http_response buildHealthResponse(bool mql5_connected, size_t queue_depth, long uptime_sec);
+	static http_response buildVersionResponse();
+	http_response formatStructuredError(int http_status, int code,
+		const utility::string_t & message, const utility::string_t & request_id);
+	bool waitForCommandResponse(const string & command, http_request & message,
+		const utility::string_t & request_id, bool & timed_out);
+	void markMql5Connected();
+	void logRequest(const http_request & request, int status, long long start_ticks);
+
 	SafeVector commands;
 	SafeMap commandResponses;
 	string_t callback_url;
