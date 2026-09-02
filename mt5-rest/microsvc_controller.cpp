@@ -77,8 +77,7 @@ void MicroserviceController::setCommandResponse(const char* command, const char*
 }
 
 void MicroserviceController::markMql5Connected() {
-	std::lock_guard<std::mutex> lock(mql5_conn_mutex);
-	mql5_connected = true;
+	mql5_connected.store(true, std::memory_order_relaxed);
 }
 
 void MicroserviceController::applyCorsHeaders(http_response & response) {
@@ -125,8 +124,11 @@ http_response MicroserviceController::formatStructuredError(int http_status, int
 }
 
 bool MicroserviceController::waitForCommandResponse(const string & command, http_request & message,
-	const utility::string_t & request_id, bool & timed_out) {
+	const utility::string_t & request_id, bool & timed_out,
+	int & status_out, long long start_ticks) {
 	if (command.size() > 7000) {
+		status_out = 413;
+		logRequest(message, status_out, start_ticks);
 		message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
 			U("Command exceeds 7000 byte limit"), request_id));
 		return true;
@@ -134,12 +136,19 @@ bool MicroserviceController::waitForCommandResponse(const string & command, http
 
 	string value;
 	if (commandResponses.wait_for(command, value, wait_timeout)) {
-		message.reply(status_codes::OK, value, "application/json");
+		status_out = 200;
+		logRequest(message, status_out, start_ticks);
+		http_response ok_response(status_codes::OK);
+		applyCorsHeaders(ok_response);
+		ok_response.headers().add(U("Content-Type"), U("application/json"));
+		ok_response.set_body(value);
+		message.reply(ok_response);
 		commandResponses.remove(command);
 		timed_out = false;
 		return true;
 	}
 
+	status_out = 504;
 	timed_out = true;
 	return false;
 }
@@ -229,10 +238,11 @@ void MicroserviceController::handleGet(http_request message) {
 	auto start_ticks = GetTickCount64();
 	auto path = requestPath(message);
 	auto params = requestQueryParams(message);
+	utility::string_t request_id;
 
 	try {
 		if (path.size() > 0 && path[0] == CMD_HEALTH) {
-			auto response = buildHealthResponse(mql5_connected, pendingCommands(),
+			auto response = buildHealthResponse(mql5_connected.load(std::memory_order_relaxed), pendingCommands(),
 				(long)((GetTickCount64() - g_process_start_ticks) / 1000));
 			logRequest(message, 200, start_ticks);
 			message.reply(response);
@@ -313,7 +323,8 @@ void MicroserviceController::handleGet(http_request message) {
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), makeRequestId()));
 				return;
 			}
 
@@ -321,13 +332,14 @@ void MicroserviceController::handleGet(http_request message) {
 
 			if (headers[header_names::authorization] != token) {
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), makeRequestId()));
 				return;
 			}
 		}
 
 		web::json::value result = web::json::value::object();
-		auto request_id = makeRequestId();
+		request_id = makeRequestId();
 
 		result[L"command"] = web::json::value::string(path[0]);
 
@@ -343,67 +355,90 @@ void MicroserviceController::handleGet(http_request message) {
 		result[L"version"] = web::json::value::string(protocolVersion());
 
 		string command = ws2s(result.serialize());
-		commands.push_back(command);
+
+		if (command.size() > 7000) {
+			logRequest(message, 413, start_ticks);
+			message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+				U("Command exceeds 7000 byte limit"), request_id));
+			return;
+		}
+
+		if (!commands.push_back(command)) {
+			logRequest(message, 503, start_ticks);
+			message.reply(formatStructuredError(status_codes::ServiceUnavailable, 503,
+				U("Command queue is full"), request_id));
+			return;
+		}
 
 		bool timed_out = false;
-		if (!waitForCommandResponse(command, message, request_id, timed_out)) {
-			logRequest(message, 504, start_ticks);
+		int status_out = 0;
+		if (!waitForCommandResponse(command, message, request_id, timed_out, status_out, start_ticks)) {
+			logRequest(message, status_out, start_ticks);
 			message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
 				U("Failed to get info, timeout"), request_id));
-		}
-		else {
-			logRequest(message, 200, start_ticks);
 		}
 	}
 	catch (const FormatException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const RequiredException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const json::json_exception & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		utility::string_t msg = s2ws(std::string(ex.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
 		logRequest(message, 500, start_ticks);
-		message.reply(status_codes::InternalError);
+		message.reply(formatStructuredError(status_codes::InternalError, 500,
+			U("Internal Server Error"), request_id));
 	}
 }
 
 void MicroserviceController::handlePost(http_request message) {
 	auto start_ticks = GetTickCount64();
+	utility::string_t request_id;
 
 	try {
 		auto path = requestPath(message);
 		auto params = requestQueryParams(message);
 
 		if (path.size() < 1) {
+			request_id = makeRequestId();
 			logRequest(message, 404, start_ticks);
-			message.reply(status_codes::NotFound);
+			message.reply(formatStructuredError(status_codes::NotFound, 404,
+				U("Not found"), request_id));
 			return;
 		}
 
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 
 			auto headers = message.headers();
 
 			if (headers[header_names::authorization] != token) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 		}
@@ -412,11 +447,15 @@ void MicroserviceController::handlePost(http_request message) {
 			callback_url = params[U("callback_url")];
 			callback_format = params[U("callback_format")];
 
-			web::json::value response = web::json::value::object();
-			response[U("message")] = json::value::string(L"Successfully subscribed");
-			response[U("code")] = json::value::number(200);
+			web::json::value body = web::json::value::object();
+			body[U("message")] = json::value::string(L"Successfully subscribed");
+			body[U("code")] = json::value::number(200);
+			http_response response(status_codes::OK);
+			applyCorsHeaders(response);
+			response.headers().add(U("Content-Type"), U("application/json"));
+			response.set_body(body);
 			logRequest(message, 200, start_ticks);
-			message.reply(status_codes::OK, response);
+			message.reply(response);
 
 			return;
 		}
@@ -426,7 +465,7 @@ void MicroserviceController::handlePost(http_request message) {
 				throw exception("POST body is empty");
 			}
 
-			auto request_id = makeRequestId();
+			request_id = makeRequestId();
 
 			std::size_t pos = body.find("}");
 			std::string command = body.substr(0, pos);
@@ -443,77 +482,100 @@ void MicroserviceController::handlePost(http_request message) {
 			command.append(ws2s(protocolVersion()));
 			command.append("\"}");
 
-			commands.push_back(command);
+			if (command.size() > 7000) {
+				logRequest(message, 413, start_ticks);
+				message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+					U("Command exceeds 7000 byte limit"), request_id));
+				return;
+			}
+
+			if (!commands.push_back(command)) {
+				logRequest(message, 503, start_ticks);
+				message.reply(formatStructuredError(status_codes::ServiceUnavailable, 503,
+					U("Command queue is full"), request_id));
+				return;
+			}
 
 			bool timed_out = false;
-			if (!waitForCommandResponse(command, message, request_id, timed_out)) {
-				logRequest(message, 504, start_ticks);
+			int status_out = 0;
+			if (!waitForCommandResponse(command, message, request_id, timed_out, status_out, start_ticks)) {
+				logRequest(message, status_out, start_ticks);
 				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
 					U("Failed to get info, timeout"), request_id));
-			}
-			else {
-				logRequest(message, 200, start_ticks);
 			}
 		}).wait();
 
 	}
 	catch (const ManagerException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, e.code, msg, request_id));
 	}
 	catch (const FormatException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const RequiredException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const json::json_exception & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		utility::string_t msg = s2ws(std::string(ex.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
 		logRequest(message, 500, start_ticks);
-		message.reply(status_codes::InternalError);
+		message.reply(formatStructuredError(status_codes::InternalError, 500,
+			U("Internal Server Error"), request_id));
 	}
 }
 
 void MicroserviceController::handleDelete(http_request message) {
 	auto start_ticks = GetTickCount64();
+	utility::string_t request_id;
 
 	try {
 		auto path = requestPath(message);
 
 		if (path.size() < 1) {
+			request_id = makeRequestId();
 			logRequest(message, 404, start_ticks);
-			message.reply(status_codes::NotFound);
+			message.reply(formatStructuredError(status_codes::NotFound, 404,
+				U("Not found"), request_id));
 			return;
 		}
 
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 
 			auto headers = message.headers();
 
 			if (headers[header_names::authorization] != token) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 		}
 
-		auto request_id = makeRequestId();
+		request_id = makeRequestId();
 
 		if (path.size() >= 2 && path[0] == L"orders") {
 			web::json::value result = web::json::value::object();
@@ -523,16 +585,27 @@ void MicroserviceController::handleDelete(http_request message) {
 			result[L"version"] = web::json::value::string(protocolVersion());
 
 			string command = ws2s(result.serialize());
-			commands.push_back(command);
+
+			if (command.size() > 7000) {
+				logRequest(message, 413, start_ticks);
+				message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+					U("Command exceeds 7000 byte limit"), request_id));
+				return;
+			}
+
+			if (!commands.push_back(command)) {
+				logRequest(message, 503, start_ticks);
+				message.reply(formatStructuredError(status_codes::ServiceUnavailable, 503,
+					U("Command queue is full"), request_id));
+				return;
+			}
 
 			bool timed_out = false;
-			if (!waitForCommandResponse(command, message, request_id, timed_out)) {
-				logRequest(message, 504, start_ticks);
+			int status_out = 0;
+			if (!waitForCommandResponse(command, message, request_id, timed_out, status_out, start_ticks)) {
+				logRequest(message, status_out, start_ticks);
 				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
 					U("Failed to get info, timeout"), request_id));
-			}
-			else {
-				logRequest(message, 200, start_ticks);
 			}
 			return;
 		}
@@ -545,80 +618,105 @@ void MicroserviceController::handleDelete(http_request message) {
 			result[L"version"] = web::json::value::string(protocolVersion());
 
 			string command = ws2s(result.serialize());
-			commands.push_back(command);
+
+			if (command.size() > 7000) {
+				logRequest(message, 413, start_ticks);
+				message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+					U("Command exceeds 7000 byte limit"), request_id));
+				return;
+			}
+
+			if (!commands.push_back(command)) {
+				logRequest(message, 503, start_ticks);
+				message.reply(formatStructuredError(status_codes::ServiceUnavailable, 503,
+					U("Command queue is full"), request_id));
+				return;
+			}
 
 			bool timed_out = false;
-			if (!waitForCommandResponse(command, message, request_id, timed_out)) {
-				logRequest(message, 504, start_ticks);
+			int status_out = 0;
+			if (!waitForCommandResponse(command, message, request_id, timed_out, status_out, start_ticks)) {
+				logRequest(message, status_out, start_ticks);
 				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
 					U("Failed to get info, timeout"), request_id));
-			}
-			else {
-				logRequest(message, 200, start_ticks);
 			}
 			return;
 		}
 
 		logRequest(message, 404, start_ticks);
-		message.reply(status_codes::NotFound);
+		message.reply(formatStructuredError(status_codes::NotFound, 404,
+			U("Not found"), request_id));
 	}
 	catch (const ManagerException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, e.code, msg, request_id));
 	}
 	catch (const FormatException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const RequiredException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const json::json_exception & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		utility::string_t msg = s2ws(std::string(ex.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
 		logRequest(message, 500, start_ticks);
-		message.reply(status_codes::InternalError);
+		message.reply(formatStructuredError(status_codes::InternalError, 500,
+			U("Internal Server Error"), request_id));
 	}
 }
 
 void MicroserviceController::handlePut(http_request message) {
 	auto start_ticks = GetTickCount64();
+	utility::string_t request_id;
 
 	try {
 		auto path = requestPath(message);
 
 		if (path.size() < 1) {
+			request_id = makeRequestId();
 			logRequest(message, 404, start_ticks);
-			message.reply(status_codes::NotFound);
+			message.reply(formatStructuredError(status_codes::NotFound, 404,
+				U("Not found"), request_id));
 			return;
 		}
 
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 
 			auto headers = message.headers();
 
 			if (headers[header_names::authorization] != token) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 		}
 
-		auto request_id = makeRequestId();
+		request_id = makeRequestId();
 
 		message.extract_utf8string(true).then([=](std::string body) {
 			if (body.length() < 1) {
@@ -654,77 +752,100 @@ void MicroserviceController::handlePut(http_request message) {
 			payload.append(ws2s(protocolVersion()));
 			payload.append("\"}");
 
-			commands.push_back(payload);
+			if (payload.size() > 7000) {
+				logRequest(message, 413, start_ticks);
+				message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+					U("Command exceeds 7000 byte limit"), request_id));
+				return;
+			}
+
+			if (!commands.push_back(payload)) {
+				logRequest(message, 503, start_ticks);
+				message.reply(formatStructuredError(status_codes::ServiceUnavailable, 503,
+					U("Command queue is full"), request_id));
+				return;
+			}
 
 			bool timed_out = false;
-			if (!waitForCommandResponse(payload, message, request_id, timed_out)) {
-				logRequest(message, 504, start_ticks);
+			int status_out = 0;
+			if (!waitForCommandResponse(payload, message, request_id, timed_out, status_out, start_ticks)) {
+				logRequest(message, status_out, start_ticks);
 				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
 					U("Failed to get info, timeout"), request_id));
-			}
-			else {
-				logRequest(message, 200, start_ticks);
 			}
 		}).wait();
 
 	}
 	catch (const ManagerException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, e.code, msg, request_id));
 	}
 	catch (const FormatException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const RequiredException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const json::json_exception & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		utility::string_t msg = s2ws(std::string(ex.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
 		logRequest(message, 500, start_ticks);
-		message.reply(status_codes::InternalError);
+		message.reply(formatStructuredError(status_codes::InternalError, 500,
+			U("Internal Server Error"), request_id));
 	}
 }
 
 void MicroserviceController::handlePatch(http_request message) {
 	auto start_ticks = GetTickCount64();
+	utility::string_t request_id;
 
 	try {
 		auto path = requestPath(message);
 
 		if (path.size() < 1) {
+			request_id = makeRequestId();
 			logRequest(message, 404, start_ticks);
-			message.reply(status_codes::NotFound);
+			message.reply(formatStructuredError(status_codes::NotFound, 404,
+				U("Not found"), request_id));
 			return;
 		}
 
 		if (!token.empty()) {
 			if (!message.headers().has(header_names::authorization)) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 
 			auto headers = message.headers();
 
 			if (headers[header_names::authorization] != token) {
+				request_id = makeRequestId();
 				logRequest(message, 401, start_ticks);
-				message.reply(status_codes::Unauthorized);
+				message.reply(formatStructuredError(status_codes::Unauthorized, 401,
+					U("Unauthorized"), request_id));
 				return;
 			}
 		}
 
-		auto request_id = makeRequestId();
+		request_id = makeRequestId();
 
 		message.extract_utf8string(true).then([=](std::string body) {
 			if (body.length() < 1) {
@@ -760,45 +881,61 @@ void MicroserviceController::handlePatch(http_request message) {
 			payload.append(ws2s(protocolVersion()));
 			payload.append("\"}");
 
-			commands.push_back(payload);
+			if (payload.size() > 7000) {
+				logRequest(message, 413, start_ticks);
+				message.reply(formatStructuredError(status_codes::RequestEntityTooLarge, 413,
+					U("Command exceeds 7000 byte limit"), request_id));
+				return;
+			}
+
+			if (!commands.push_back(payload)) {
+				logRequest(message, 503, start_ticks);
+				message.reply(formatStructuredError(status_codes::ServiceUnavailable, 503,
+					U("Command queue is full"), request_id));
+				return;
+			}
 
 			bool timed_out = false;
-			if (!waitForCommandResponse(payload, message, request_id, timed_out)) {
-				logRequest(message, 504, start_ticks);
+			int status_out = 0;
+			if (!waitForCommandResponse(payload, message, request_id, timed_out, status_out, start_ticks)) {
+				logRequest(message, status_out, start_ticks);
 				message.reply(formatStructuredError(status_codes::GatewayTimeout, 504,
 					U("Failed to get info, timeout"), request_id));
-			}
-			else {
-				logRequest(message, 200, start_ticks);
 			}
 		}).wait();
 
 	}
 	catch (const ManagerException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(e.code, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, e.code, msg, request_id));
 	}
 	catch (const FormatException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const RequiredException & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(405, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 405, msg, request_id));
 	}
 	catch (const json::json_exception & e) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, e.what()));
+		utility::string_t msg = s2ws(std::string(e.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << e.what() << endl;
 	}
 	catch (const std::exception & ex) {
 		logRequest(message, 400, start_ticks);
-		message.reply(status_codes::BadRequest, formatError(410, ex.what()));
+		utility::string_t msg = s2ws(std::string(ex.what()));
+		message.reply(formatStructuredError(status_codes::BadRequest, 410, msg, request_id));
 		ucout << ex.what() << endl;
 	}
 	catch (...) {
 		logRequest(message, 500, start_ticks);
-		message.reply(status_codes::InternalError);
+		message.reply(formatStructuredError(status_codes::InternalError, 500,
+			U("Internal Server Error"), request_id));
 	}
 }
 

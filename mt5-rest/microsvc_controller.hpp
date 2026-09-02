@@ -1,5 +1,6 @@
 #pragma once 
 
+#include <atomic>
 #include <locale>
 #include <codecvt>
 
@@ -31,7 +32,9 @@ static wstring s2ws(const std::string& str) {
 
 class MicroserviceController : public BasicController, Controller {
 public:
-	MicroserviceController() : BasicController() {}
+	MicroserviceController() : BasicController(), mql5_connected(false) {
+		commands.set_max_size(256);
+	}
 	~MicroserviceController() {
 	}
 	void handleGet(http_request message) override;
@@ -66,7 +69,7 @@ public:
 	size_t pendingCommands();
 
 private:
-	bool mql5_connected = false;
+	std::atomic<bool> mql5_connected;
 	std::mutex mql5_conn_mutex;
 
 	static json::value responseNotImpl(const http::method & method);
@@ -78,7 +81,8 @@ private:
 	http_response formatStructuredError(int http_status, int code,
 		const utility::string_t & message, const utility::string_t & request_id);
 	bool waitForCommandResponse(const string & command, http_request & message,
-		const utility::string_t & request_id, bool & timed_out);
+		const utility::string_t & request_id, bool & timed_out,
+		int & status_out, long long start_ticks);
 	void markMql5Connected();
 	void logRequest(const http_request & request, int status, long long start_ticks);
 
@@ -86,7 +90,7 @@ private:
 	SafeMap commandResponses;
 	string_t callback_url;
 	string_t callback_format;
-	int wait_timeout;
+	int wait_timeout = 0;
 	string path_docs;
 	string url_swagger;
 	string_t token;
