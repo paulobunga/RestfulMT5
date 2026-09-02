@@ -404,7 +404,7 @@ string CRestApi::getAccountInfo() {
    info["leverage"] = AccountInfoInteger(ACCOUNT_LEVERAGE);
    info["margin_level"] = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
    info["positions_total"] = PositionsTotal();
-   if (HistorySelect(0,TimeCurrent())) {
+   if (HistorySelect(TimeCurrent() - PeriodSeconds(PERIOD_D1), TimeCurrent())) {
       info["orders_total"] = OrdersTotal();   
    } else {
       info["orders_total"] = 0;
@@ -426,7 +426,7 @@ string CRestApi::getBalanceInfo() {
    info["margin_free"] = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    
    info["positions_total"] = PositionsTotal();
-   if (HistorySelect(0,TimeCurrent())) {
+   if (HistorySelect(TimeCurrent() - PeriodSeconds(PERIOD_D1), TimeCurrent())) {
       info["deal_total"] = HistoryDealsTotal();
       info["orders_total"] = OrdersTotal();   
    } else {
