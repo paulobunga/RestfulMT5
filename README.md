@@ -28,7 +28,27 @@ Turns MetaTrader 5 into a REST API server for algorithmic trading.
 
 ## API Endpoints
 
-All endpoints require `Authorization` header with your token.
+All endpoints require an `Authorization` header with your token (`Authorization: your-token`), except the operational endpoints below (`/health`, `/version`) and `OPTIONS` preflight requests.
+
+### Operational
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check: uptime, queue depth, MQL5 connection status, command wait timeout. Does **not** require `Authorization`. |
+| `/version` | GET | Protocol version, e.g. `{"version":"1", ...}`. Does **not** require `Authorization`. |
+| `OPTIONS` (any path) | OPTIONS | CORS preflight. Returns `Allow: GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD`. `HEAD` is also supported. |
+
+Every response includes CORS headers (`Access-Control-Allow-Origin: *`). On errors the server returns a structured JSON body:
+
+```json
+{
+  "code": 401,
+  "message": "Unauthorized",
+  "request_id": "20260902...-1"
+}
+```
+
+Common HTTP status codes include `401` (unauthorized), `413` (request too large), `503` (command queue full), and `504` (command wait timeout).
 
 ### Account & Info
 
@@ -36,7 +56,13 @@ All endpoints require `Authorization` header with your token.
 |----------|--------|-------------|
 | `/info` | GET | Account details, balance, equity, margin |
 | `/balance` | GET | Balance, equity, margin info |
-| `/symbols/{name}` | GET | Symbol info including ask/bid prices |
+| `/account` | GET | Full account properties (company, currency, server, name, number, leverage, balance, equity, margin, margin_free, margin_level, profit, credit, stopout, trade settings, etc.) |
+| `/symbols` | GET | List all tradable symbol names |
+| `/symbols/{name}` | GET | Full symbol info including ask/bid prices, session_open, session_close, spread, swap_long, swap_short, digits, stops level, freeze level, exempt mode, filling mode |
+| `/tick/{symbol}` | GET | Latest tick: bid, ask, last, volume, time, time_msc, flags |
+| `/positions_pnl` | GET | Aggregate realized + unrealized PnL grouped per symbol (profit, swap) |
+| `/margin/{symbol}` | GET | Margin calculation (optional `volume` and `type` query params; default 0.01 buy) |
+| `/account_history` | GET | Account deals history: total PnL grouped by day, via `from`/`to` timestamps |
 
 ### Positions & Orders
 
@@ -44,8 +70,12 @@ All endpoints require `Authorization` header with your token.
 |----------|--------|-------------|
 | `/positions` | GET | List all open positions |
 | `/positions/{id}` | GET | Get position by ID |
+| `/positions/{id}` | DELETE | Close position by ID (REST-style shortcut) |
+| `/positions/{id}` | PUT/PATCH | Modify position (stoploss/takeprofit) |
 | `/orders` | GET | List pending orders |
 | `/orders/{id}` | GET | Get order by ID |
+| `/orders/{id}` | DELETE | Cancel pending order by ID (REST-style shortcut) |
+| `/orders/{id}` | PUT/PATCH | Modify pending order |
 | `/history` | GET | List order history |
 | `/history/{id}` | GET | Get history order by ID |
 | `/deals` | GET | List deals (query: `offset`, `limit`) |
@@ -92,7 +122,10 @@ curl -H "Authorization: your-token" "http://localhost:6542/candles/EURGBP?timefr
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/trade` | POST | Execute trading actions |
+| `/trade` | POST | Execute a trading action |
+| `/trade/close_all` | POST | Close **all** open positions |
+| `/trade/close_symbol/{symbol}` | POST | Close all positions of one symbol |
+| `/trade/batch` | POST | Execute up to 20 trade operations in a single request |
 
 ## Trade Examples
 
@@ -149,6 +182,33 @@ curl -H "Authorization: your-token" "http://localhost:6542/candles/EURGBP?timefr
 // Cancel pending order
 { "actionType": "ORDER_CANCEL", "id": 123456789 }
 ```
+
+### Batch Trading
+
+Execute multiple trade operations in one request to `/trade/batch`. The body wraps an array of trade actions under a `trades` key (each action uses the same format as `POST /trade`). The batch is capped at **20** operations per request.
+
+```json
+{
+  "trades": [
+    { "symbol": "EURUSD", "actionType": "ORDER_TYPE_BUY", "volume": 0.1, "stoploss": 1.09000, "takeprofit": 1.11000 },
+    { "symbol": "GBPUSD", "actionType": "ORDER_TYPE_SELL", "volume": 0.1, "stoploss": 1.27000, "takeprofit": 1.24000 },
+    { "actionType": "POSITION_CLOSE_ID", "id": 123456789 }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "count": 3,
+  "results": [
+    { "error": 10009, "description": "TRADE_RETCODE_DONE", "order_id": 405895526, "function": "CRestApi::tradingModule" },
+    { "error": 10009, "description": "TRADE_RETCODE_DONE", "order_id": 405895527, "function": "CRestApi::tradingModule" },
+    { "error": 10009, "description": "TRADE_RETCODE_DONE", "order_id": 0, "function": "CRestApi::tradingModule" }
+  ]
+}
+```
+`count` is the number of operations executed; if more than 20 were sent, a `cap` field is included. Each element of `results` uses the same shape as the single `/trade` response below.
 
 ## Trade Response
 
