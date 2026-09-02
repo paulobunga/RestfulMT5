@@ -457,9 +457,12 @@ string CRestApi::getPositions() {
               position["stoploss"]=PositionGetDouble(POSITION_SL);
               position["takeprofit"]=PositionGetDouble(POSITION_TP);
               position["volume"]=PositionGetDouble(POSITION_VOLUME);
-              position["price_current"]=PositionGetDouble(POSITION_PRICE_CURRENT);
-            
-              data.Add(position);
+position["price_current"]=PositionGetDouble(POSITION_PRICE_CURRENT);
+               
+               position["profit"]  = PositionGetDouble(POSITION_PROFIT);
+               position["swap"]    = PositionGetDouble(POSITION_SWAP);
+               position["comment"] = PositionGetString(POSITION_COMMENT);
+               data.Add(position);
             }
           // Error handling    
           else actionDoneOrError(ERR_TRADE_POSITION_NOT_FOUND, __FUNCTION__);
