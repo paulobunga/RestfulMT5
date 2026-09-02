@@ -64,6 +64,11 @@ private:
    string orderDoneOrError(bool error, string funcName, CTrade &trade);
    string actionDoneOrError(int lastError, string funcName);
    string fromDateTime(datetime param);
+   datetime parseFromParam(string s);
+   datetime parseToParam(string s);
+   string   dealReasonString(int reason);
+   string   dealEntryString(int entry);
+   string   orderReasonString(int reason);
    ENUM_TIMEFRAMES StringToTimeframe(string tf);
    //--- new methods for full MT5 coverage
    string getAccount();
@@ -1474,4 +1479,89 @@ string CRestApi::fromDateTime(datetime param) {
    s_iso8601.Replace(".", "-");
    s_iso8601.Append(".000Z");
    return s_iso8601.Str();
+}
+
+//+------------------------------------------------------------------+
+//| Parse a from-query param to a datetime (0 if absent/invalid)     |
+//+------------------------------------------------------------------+
+datetime CRestApi::parseFromParam(string s) {
+   s = TrimString(s);
+   if(s == "") return 0;
+   // Integer epoch: 13 digits = millis (divide by 1000), 10 digits = seconds
+   int len = StringLen(s);
+   bool allDigits = (StringFind(s, "-") == -1);
+   if(allDigits && len >= 10) {
+      long v = StringToInteger(s);
+      if(len == 13) v /= 1000;          // millis -> seconds
+      return (datetime)v;
+   }
+   // ISO-8601 string
+   return StringToTime(s);
+}
+
+//+------------------------------------------------------------------+
+//| Parse a to-query param to a datetime (TimeCurrent() if absent)   |
+//+------------------------------------------------------------------+
+datetime CRestApi::parseToParam(string s) {
+   s = TrimString(s);
+   if(s == "") return TimeCurrent();
+   int len = StringLen(s);
+   bool allDigits = (StringFind(s, "-") == -1);
+   if(allDigits && len >= 10) {
+      long v = StringToInteger(s);
+      if(len == 13) v /= 1000;
+      return (datetime)v;
+   }
+   return StringToTime(s);
+}
+
+//+------------------------------------------------------------------+
+//| Readable deal exit reason                                         |
+//+------------------------------------------------------------------+
+string CRestApi::dealReasonString(int reason) {
+   switch(reason) {
+      case 0:  return "client";         // DEAL_REASON_CLIENT
+      case 1:  return "expert";         // DEAL_REASON_EXPERT
+      case 2:  return "dealer";         // DEAL_REASON_DEALER
+      case 3:  return "stop loss";      // DEAL_REASON_SL
+      case 4:  return "take profit";    // DEAL_REASON_TP
+      case 5:  return "stop out";       // DEAL_REASON_SO
+      case 6:  return "rollover";       // DEAL_REASON_ROLLOVER
+      case 7:  return "external";       // DEAL_REASON_EXTERNAL
+      case 8:  return "variation margin";// DEAL_REASON_VMARGIN
+      case 9:  return "split";          // DEAL_REASON_SPLIT
+      default: return EnumToString((ENUM_DEAL_REASON)reason);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Readable deal entry type                                          |
+//+------------------------------------------------------------------+
+string CRestApi::dealEntryString(int entry) {
+   switch(entry) {
+      case 0: return "in";       // DEAL_ENTRY_IN
+      case 1: return "out";      // DEAL_ENTRY_OUT
+      case 2: return "inout";    // DEAL_ENTRY_INOUT
+      case 3: return "out_by";   // DEAL_ENTRY_OUT_BY
+      default: return EnumToString((ENUM_DEAL_ENTRY)entry);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Readable order reason                                              |
+//+------------------------------------------------------------------+
+string CRestApi::orderReasonString(int reason) {
+   switch(reason) {
+      case 0:  return "client";
+      case 1:  return "expert";
+      case 2:  return "dealer";
+      case 3:  return "stop loss";
+      case 4:  return "take profit";
+      case 5:  return "stop out";
+      case 6:  return "rollover";
+      case 7:  return "external";
+      case 8:  return "variation margin";
+      case 9:  return "split";
+      default: return EnumToString((ENUM_ORDER_REASON)reason);
+   }
 }
