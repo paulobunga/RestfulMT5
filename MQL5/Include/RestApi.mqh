@@ -1012,7 +1012,7 @@ string CRestApi::getAccount() {
    info["trade_fifo"] = AccountInfoInteger(ACCOUNT_TRADE_FIFO);
    info["currency_digits"] = AccountInfoInteger(ACCOUNT_CURRENCY_DIGITS);
    info["stopout_mode"] = EnumToString(ENUM_ACCOUNT_STOPOUT_MODE(AccountInfoInteger(ACCOUNT_STOPOUT_MODE)));
-   info["stopout_level"] = AccountInfoDouble(ACCOUNT_MARGIN_SO_CALL);
+   info["stopout_level"] = AccountInfoDouble(ACCOUNT_MARGIN_SO_SO);
 
    string t = info.Serialize();
    if(debug) Print(t);
@@ -1068,6 +1068,17 @@ string CRestApi::getSymbolInfoFull(string name) {
    info["trade_filling"] = SymbolInfoInteger(name, SYMBOL_TRADE_FILLING);
    info["trade_stops_level"] = (int)SymbolInfoInteger(name, SYMBOL_TRADE_STOPS_LEVEL);
    info["trade_freeze_level"] = (int)SymbolInfoInteger(name, SYMBOL_TRADE_FREEZE_LEVEL);
+
+   long sessionOpen = SymbolInfoInteger(name, SYMBOL_SESSION_OPEN);
+   long sessionClose = SymbolInfoInteger(name, SYMBOL_SESSION_CLOSE);
+   if(sessionOpen >= 0)
+      info["session_open"] = (int)sessionOpen;
+   else
+      info["session_open"] = -1;
+   if(sessionClose >= 0)
+      info["session_close"] = (int)sessionClose;
+   else
+      info["session_close"] = -1;
 
    string t = info.Serialize();
    if(debug) Print(t);
@@ -1203,7 +1214,7 @@ string CRestApi::getAccountHistory(CJAVal &dataObject) {
    }
 
    if(!HistorySelect(from, to))
-      return actionDoneOrError(GetLastError(), __FUNCTION_);
+      return actionDoneOrError(GetLastError(), __FUNCTION__);
 
    int dealsTotal = HistoryDealsTotal();
    CJAVal days;
@@ -1367,7 +1378,8 @@ string CRestApi::tradeBatch(CJAVal &dataObject) {
 
    for(int i = 0; i < count; i++) {
       CJAVal *tradeData = trades[i];
-      CJAVal result = tradingModule(tradeData);
+      CJAVal result;
+      result.Deserialize(tradingModule(tradeData));
       results.Add(result);
    }
 
