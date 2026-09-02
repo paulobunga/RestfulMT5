@@ -475,51 +475,65 @@ string CRestApi::getPositions() {
 //+------------------------------------------------------------------+
 string CRestApi::getTransactions(CJAVal &dataObject) {
       ResetLastError();
-      
-      ulong ticket;
+
+      string   symbolFilter   = dataObject["symbol"].ToStr();
+      ulong    positionId     = (ulong)dataObject["position_id"].ToInt();
+      int      offset         = (int)MathMax(0, dataObject["offset"].ToInt());
+      int      limit          = (int)dataObject["limit"].ToInt();
+      if(limit <= 0) limit = 100;
+      if(limit > 500) limit = 500;
+      datetime fromD = parseFromParam(dataObject["from"].ToStr());
+      datetime toD   = parseToParam(dataObject["to"].ToStr());
+
       CJAVal data, deal;
-      
-      int offset = (int)dataObject["offset"].ToInt();
-      int limit = (int)dataObject["limit"].ToInt();
-      
-      if (HistorySelect(0,TimeCurrent()))   
-         {    
-            int dealsTotal = HistoryDealsTotal();
-            
-            if(limit == 0 )
-               limit = dealsTotal-1;
-            else
-               limit = limit-1;
-               
-            if(offset > dealsTotal-1)
-               offset = dealsTotal-1;
-               
-            if(!dealsTotal) {
-              data.Add(deal);
-            }
-            
-            for(int i = MathMin(offset + limit, dealsTotal-1);i>=offset;i--) {     
-      
-               if((ticket = HistoryDealGetTicket(i))>0) {   
-                  deal["id"] = (int)ticket;
-                  deal["price"] = HistoryDealGetDouble(ticket,DEAL_PRICE);
-                  deal["commission"] = HistoryDealGetDouble(ticket,DEAL_COMMISSION);
-                  deal["time"]= fromDateTime(HistoryDealGetInteger(ticket,DEAL_TIME));
-                  deal["symbol"]=HistoryDealGetString(ticket,DEAL_SYMBOL);
-                  deal["type"]=EnumToString(ENUM_DEAL_TYPE(HistoryDealGetInteger(ticket,DEAL_TYPE)));                  
-                  deal["profit"] = HistoryDealGetDouble(ticket,DEAL_PROFIT);       
-                  deal["volume"] = HistoryDealGetDouble(ticket,DEAL_VOLUME);                         
-                  deal["position_id"] = HistoryDealGetInteger(ticket,DEAL_POSITION_ID);
-                  deal["order_id"] = HistoryDealGetInteger(ticket,DEAL_ORDER);                  
-                  data.Add(deal);
-                } 
-             }
+      ulong  collected[];
+      int    collectedCount = 0;
+
+      if(HistorySelect(fromD, toD)) {
+         int dealsTotal = HistoryDealsTotal();
+         ArrayResize(collected, dealsTotal > 0 ? dealsTotal : 1);
+
+         for(int i = dealsTotal-1; i >= 0; i--) {      // newest first
+            ulong ticket = HistoryDealGetTicket(i);
+            if(ticket == 0) continue;
+            bool matchPos  = (positionId == 0) || ((ulong)HistoryDealGetInteger(ticket, DEAL_POSITION_ID) == positionId);
+            bool matchSym  = (symbolFilter == "") || (HistoryDealGetString(ticket, DEAL_SYMBOL) == symbolFilter);
+            if(matchPos && matchSym)
+               collected[collectedCount++] = ticket;
          }
-         
-       string t=data.Serialize();
-       if(debug) {Print(t);}
-       
-       return t;
+      }
+
+      int total = collectedCount;
+      int start = MathMin(offset, total);
+      int end   = MathMin(offset + limit, total);
+
+      for(int k = start; k < end; k++) {
+         ulong ticket = collected[k];
+         deal["id"]          = (int)ticket;
+         deal["price"]       = HistoryDealGetDouble(ticket, DEAL_PRICE);
+         deal["commission"]  = HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+         deal["swap"]        = HistoryDealGetDouble(ticket, DEAL_SWAP);
+         deal["profit"]      = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+         deal["volume"]      = HistoryDealGetDouble(ticket, DEAL_VOLUME);
+         deal["time"]        = fromDateTime(HistoryDealGetInteger(ticket, DEAL_TIME));
+         deal["symbol"]      = HistoryDealGetString(ticket, DEAL_SYMBOL);
+         deal["type"]        = EnumToString((ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE));
+         deal["position_id"] = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+         deal["order_id"]    = HistoryDealGetInteger(ticket, DEAL_ORDER);
+         deal["entry"]       = dealEntryString((int)HistoryDealGetInteger(ticket, DEAL_ENTRY));
+         deal["reason"]      = dealReasonString((int)HistoryDealGetInteger(ticket, DEAL_REASON));
+         deal["comment"]     = HistoryDealGetString(ticket, DEAL_COMMENT);
+         data.Add(deal);
+      }
+
+      CJAVal out;
+      out["deals"].Set(data);
+      out["total"] = (ulong)total;
+
+      string t = out.Serialize();
+      if(debug) {Print(t);}
+
+      return t;
 }
 
 //+------------------------------------------------------------------+
