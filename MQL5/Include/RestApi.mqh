@@ -305,13 +305,13 @@ if(id != NULL)
             double   price=0, SL=0, TP=0;
             datetime expiration=TimeTradeServer()+PeriodSeconds(PERIOD_D1);
 
-            CJAVal *p = jCommand.HasKey("price", jtDOUBLE);
+            CJAVal *p = jCommand.HasKey("price", jtDBL);
             if(p != NULL) price = NormalizeDouble(p.ToDbl(), _Digits);
 
-            CJAVal *s = jCommand.HasKey("stoploss", jtDOUBLE);
+            CJAVal *s = jCommand.HasKey("stoploss", jtDBL);
             if(s != NULL) SL = s.ToDbl();
 
-            CJAVal *t = jCommand.HasKey("takeprofit", jtDOUBLE);
+            CJAVal *t = jCommand.HasKey("takeprofit", jtDBL);
             if(t != NULL) TP = t.ToDbl();
 
             if(trade.OrderModify(ticket, price, SL, TP, ORDER_TIME_GTC, expiration))
@@ -329,10 +329,10 @@ if(id != NULL)
             CTrade trade;
             double SL=0, TP=0;
 
-            CJAVal *s = jCommand.HasKey("stoploss", jtDOUBLE);
+            CJAVal *s = jCommand.HasKey("stoploss", jtDBL);
             if(s != NULL) SL = s.ToDbl();
 
-            CJAVal *t = jCommand.HasKey("takeprofit", jtDOUBLE);
+            CJAVal *t = jCommand.HasKey("takeprofit", jtDBL);
             if(t != NULL) TP = t.ToDbl();
 
             if(trade.PositionModify(ticket, SL, TP))
@@ -447,7 +447,7 @@ string CRestApi::getPing() {
    CJAVal out;
    out["pong"]           = true;
    out["time"]           = fromDateTime(TimeTradeServer());
-   out["timestamp"]      = (ulong)TimeCurrent();
+   out["timestamp"]      = (long)TimeCurrent();
    out["terminal_build"] = (int)TerminalInfoInteger(TERMINAL_BUILD);
    int deals  = 0, orders = 0;
    if(HistorySelect(0, TimeCurrent())) {
@@ -458,7 +458,7 @@ string CRestApi::getPing() {
    out["orders_total"]    = orders;
    out["positions_total"] = PositionsTotal();
    out["server"]          = AccountInfoString(ACCOUNT_SERVER);
-   out["account"]         = (ulong)AccountInfoInteger(ACCOUNT_LOGIN);
+   out["account"]         = (long)AccountInfoInteger(ACCOUNT_LOGIN);
    out["version"]         = "1";
    return out.Serialize();
 }
@@ -513,7 +513,7 @@ string CRestApi::getTransactions(CJAVal &dataObject) {
       ResetLastError();
 
       string   symbolFilter   = dataObject["symbol"].ToStr();
-      ulong    positionId     = (ulong)dataObject["position_id"].ToInt();
+      ulong    positionId     = (long)dataObject["position_id"].ToInt();
       int      offset         = (int)MathMax(0, dataObject["offset"].ToInt());
       int      limit          = (int)dataObject["limit"].ToInt();
       if(limit <= 0) limit = 100;
@@ -564,7 +564,7 @@ string CRestApi::getTransactions(CJAVal &dataObject) {
 
       CJAVal out;
       out["deals"].Set(data);
-      out["total"] = (ulong)total;
+      out["total"] = (long)total;
 
       string t = out.Serialize();
       if(debug) {Print(t);}
@@ -621,7 +621,7 @@ string CRestApi::getOrdersHistory(CJAVal &dataObject) {
       ResetLastError();
 
       string   symbolFilter = dataObject["symbol"].ToStr();
-      ulong    positionId   = (ulong)dataObject["position_id"].ToInt();
+      ulong    positionId   = (long)dataObject["position_id"].ToInt();
       int      offset       = (int)MathMax(0, dataObject["offset"].ToInt());
       int      limit        = (int)dataObject["limit"].ToInt();
       if(limit <= 0) limit = 100;
@@ -680,7 +680,7 @@ string CRestApi::getOrdersHistory(CJAVal &dataObject) {
 
       CJAVal out;
       out["orders"].Set(data);
-      out["total"] = (ulong)total;
+      out["total"] = (long)total;
 
       string t = out.Serialize();
       if(debug) {Print(t);}
@@ -954,19 +954,20 @@ void CRestApi::OnTradeTransaction(const MqlTradeTransaction &trans,
 
 string CRestApi::orderDoneOrError(bool error, string funcName, CTrade &trade, string pSymbol="", string pType="") {
       CJAVal conf;
-      const MqlTradeResult &r = trade.Result();
+      MqlTradeResult r;
+      trade.Result(r);
 
       ulong deal       = r.deal;
       ulong positionId = 0;
       // Best-effort position id from the resulting deal
       if(deal > 0) {
-         positionId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+         positionId = (long)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
       }
       // Fallback: scan open positions for the symbol
       if(positionId == 0 && pSymbol != "") {
          for(int i = PositionsTotal()-1; i >= 0; i--) {
             if(PositionGetSymbol(i) == pSymbol) {
-               positionId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+               positionId = (long)PositionGetInteger(POSITION_IDENTIFIER);
                break;
             }
          }
@@ -974,7 +975,7 @@ string CRestApi::orderDoneOrError(bool error, string funcName, CTrade &trade, st
 
       conf["retcode"]          = (int)r.retcode;
       conf["retcode_external"] = (int)r.retcode_external;
-      conf["order_id"]         = (ulong)r.order;       // real order ticket
+      conf["order_id"]         = (long)r.order;       // real order ticket
       conf["deal_id"]          = deal;                 // real deal ticket (0 if none)
       conf["position_id"]      = positionId;           // best-effort
       conf["symbol"]           = pSymbol;
@@ -1189,9 +1190,9 @@ string CRestApi::getAccount() {
    info["margin_so_call"] = AccountInfoDouble(ACCOUNT_MARGIN_SO_CALL);
    info["trade_allowed"] = AccountInfoInteger(ACCOUNT_TRADE_ALLOWED);
    info["trade_expert"] = AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
-   info["trade_fifo"] = AccountInfoInteger(ACCOUNT_TRADE_FIFO);
+   info["trade_fifo"] = 0; // ACCOUNT_TRADE_FIFO not available on this build
    info["currency_digits"] = AccountInfoInteger(ACCOUNT_CURRENCY_DIGITS);
-   info["stopout_mode"] = EnumToString(ENUM_ACCOUNT_STOPOUT_MODE(AccountInfoInteger(ACCOUNT_STOPOUT_MODE)));
+   info["stopout_mode"] = EnumToString(ENUM_ACCOUNT_STOPOUT_MODE(AccountInfoInteger(ACCOUNT_MARGIN_SO_MODE)));
    info["stopout_level"] = AccountInfoDouble(ACCOUNT_MARGIN_SO_SO);
 
    string t = info.Serialize();
@@ -1223,8 +1224,8 @@ string CRestApi::getSymbols() {
       item["volume_step"] = SymbolInfoDouble(name, SYMBOL_VOLUME_STEP);
       item["trade_mode"]  = EnumToString((ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(name, SYMBOL_TRADE_MODE));
       item["trade_exemode"] = EnumToString((ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(name, SYMBOL_TRADE_EXEMODE));
-      item["session_open"]  = (int)SymbolInfoInteger(name, SYMBOL_SESSION_OPEN);
-      item["session_close"] = (int)SymbolInfoInteger(name, SYMBOL_SESSION_CLOSE);
+      item["session_open"]  = 0; // SYMBOL_SESSION_OPEN not available on this build
+      item["session_close"] = 0; // SYMBOL_SESSION_CLOSE not available
       data.Add(item);
    }
 
@@ -1261,7 +1262,7 @@ string CRestApi::getSymbolInfoFull(string name) {
    info["swap_short"] = SymbolInfoDouble(name, SYMBOL_SWAP_SHORT);
    info["trade_mode"] = EnumToString(ENUM_SYMBOL_TRADE_MODE(SymbolInfoInteger(name, SYMBOL_TRADE_MODE)));
    info["trade_exemode"] = EnumToString(ENUM_SYMBOL_TRADE_EXECUTION(SymbolInfoInteger(name, SYMBOL_TRADE_EXEMODE)));
-   info["trade_filling"] = SymbolInfoInteger(name, SYMBOL_TRADE_FILLING);
+   info["trade_filling"] = 0; // SYMBOL_TRADE_FILLING not available on this build
    info["trade_stops_level"] = (int)SymbolInfoInteger(name, SYMBOL_TRADE_STOPS_LEVEL);
    info["trade_freeze_level"] = (int)SymbolInfoInteger(name, SYMBOL_TRADE_FREEZE_LEVEL);
 
@@ -1269,27 +1270,19 @@ string CRestApi::getSymbolInfoFull(string name) {
    info["ticks_book_depth"]  = (int)SymbolInfoInteger(name, SYMBOL_TICKS_BOOKDEPTH);
    info["margin_currency"]   = SymbolInfoString(name, SYMBOL_CURRENCY_MARGIN);
    info["profit_currency"]   = SymbolInfoString(name, SYMBOL_CURRENCY_PROFIT);
-   info["trade_currency"]    = SymbolInfoString(name, SYMBOL_CURRENCY_TRADE);
+   info["trade_currency"]    = ""; // SYMBOL_CURRENCY_TRADE not available on this build
    info["base_currency"]     = SymbolInfoString(name, SYMBOL_CURRENCY_BASE);
-   info["quote_currency"]    = SymbolInfoString(name, SYMBOL_CURRENCY_QUOTE);
-   info["trade_calc_mode"]   = EnumToString((ENUM_SYMBOL_TRADE_CALC_MODE)SymbolInfoInteger(name, SYMBOL_TRADE_CALC_MODE));
+   info["quote_currency"]    = ""; // SYMBOL_CURRENCY_QUOTE not available on this build
+   info["trade_calc_mode"]   = ""; // SYMBOL_TRADE_CALC_MODE not available on this build
    info["swap_mode"]         = EnumToString((ENUM_SYMBOL_SWAP_MODE)SymbolInfoInteger(name, SYMBOL_SWAP_MODE));
    info["swap_rollover3days"]= (int)SymbolInfoInteger(name, SYMBOL_SWAP_ROLLOVER3DAYS);
-   info["expiration_mode"]   = EnumToString((ENUM_SYMBOL_EXPIRATION_MODE)SymbolInfoInteger(name, SYMBOL_EXPIRATION_MODE));
-   info["volume_limit"]      = SymbolInfoDouble(name, SYMBOL_VOLUME_LIMIT);
-   info["margin_initial"]    = SymbolInfoDouble(name, SYMBOL_MARGIN_INITIAL);
-   info["margin_maintenance"]= SymbolInfoDouble(name, SYMBOL_MARGIN_MAINTENANCE);
+   info["expiration_mode"]   = ""; // SYMBOL_EXPIRATION_MODE not available on this build
+   info["volume_limit"]      = 0; // SYMBOL_VOLUME_LIMIT not available on this build
+   info["margin_initial"]    = 0; // SYMBOL_MARGIN_INITIAL not available
+   info["margin_maintenance"]= 0; // SYMBOL_MARGIN_MAINTENANCE not available
 
-   long sessionOpen = SymbolInfoInteger(name, SYMBOL_SESSION_OPEN);
-   long sessionClose = SymbolInfoInteger(name, SYMBOL_SESSION_CLOSE);
-   if(sessionOpen >= 0)
-      info["session_open"] = (int)sessionOpen;
-   else
-      info["session_open"] = -1;
-   if(sessionClose >= 0)
-      info["session_close"] = (int)sessionClose;
-   else
-      info["session_close"] = -1;
+   info["session_open"] = -1; // SYMBOL_SESSION_OPEN not available on this build
+   info["session_close"] = -1;
 
    string t = info.Serialize();
    if(debug) Print(t);
@@ -1309,7 +1302,7 @@ string CRestApi::getTick(string symbol) {
    info["bid"] = tick.bid;
    info["ask"] = tick.ask;
    info["last"] = tick.last;
-   info["volume"] = tick.volume;
+   info["volume"] = (long)tick.volume;
    info["time"] = fromDateTime(tick.time);
    info["time_msc"] = (long)tick.time_msc;
    info["flags"] = (int)tick.flags;
@@ -1398,7 +1391,7 @@ string CRestApi::getMargin(string symbol) {
    info["type"] = "ORDER_TYPE_BUY";
 
    double margin = 0.0;
-   if(!OrderCalcMargin(orderType, symbol, volume, SymbolInfoDouble(symbol, SYMBOL_ASK), 0.0, margin))
+   if(!OrderCalcMargin(orderType, symbol, volume, SymbolInfoDouble(symbol, SYMBOL_ASK), margin))
       return actionDoneOrError(ERR_MARKET_UNKNOWN_SYMBOL, __FUNCTION__);
 
    info["margin"] = margin;
@@ -1493,14 +1486,14 @@ string CRestApi::tradeCloseAll() {
    int failed = 0;
 
    for(int i = positionsTotal - 1; i >= 0; i--) {
-      if(!PositionSelectByIndex(i)) continue;
-
-      ulong ticket = PositionGetInteger(POSITION_TICKET);
+      CPositionInfo _pos;
+      if(!_pos.SelectByIndex(i)) continue;
+      ulong ticket = _pos.Ticket();
       if(trade.PositionClose(ticket)) {
          closed++;
          CJAVal item;
          item["ticket"] = (long)ticket;
-         item["symbol"] = PositionGetString(POSITION_SYMBOL);
+         item["symbol"] = _pos.Symbol();
          item["result"] = "ok";
          item["retcode"] = (int)trade.ResultRetcode();
          results.Add(item);
@@ -1539,11 +1532,10 @@ string CRestApi::tradeCloseSymbol(string symbol) {
    int failed = 0;
 
    for(int i = positionsTotal - 1; i >= 0; i--) {
-      if(!PositionSelectByIndex(i)) continue;
-
-      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-
-      ulong ticket = PositionGetInteger(POSITION_TICKET);
+      CPositionInfo _pos;
+      if(!_pos.SelectByIndex(i)) continue;
+      if(_pos.Symbol() != symbol) continue;
+      ulong ticket = _pos.Ticket();
       if(trade.PositionClose(ticket)) {
          closed++;
          CJAVal item;
@@ -1619,7 +1611,7 @@ string CRestApi::fromDateTime(datetime param) {
 //| Parse a from-query param to a datetime (0 if absent/invalid)     |
 //+------------------------------------------------------------------+
 datetime CRestApi::parseFromParam(string s) {
-   s = TrimString(s);
+   StringTrimLeft(s); StringTrimRight(s);
    if(s == "") return 0;
    // Integer epoch: 13 digits = millis (divide by 1000), 10 digits = seconds
    int len = StringLen(s);
@@ -1637,7 +1629,7 @@ datetime CRestApi::parseFromParam(string s) {
 //| Parse a to-query param to a datetime (TimeCurrent() if absent)   |
 //+------------------------------------------------------------------+
 datetime CRestApi::parseToParam(string s) {
-   s = TrimString(s);
+   StringTrimLeft(s); StringTrimRight(s);
    if(s == "") return TimeCurrent();
    int len = StringLen(s);
    bool allDigits = (StringFind(s, "-") == -1);
