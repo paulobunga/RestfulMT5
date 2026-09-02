@@ -9,24 +9,23 @@ using namespace std;
 
 class SafeVector {
 public:
-	SafeVector() : vec(), mut(), cond() {}
-	SafeVector(const SafeVector& orig) : vec(orig.vec), mut(), cond() {}
+	SafeVector() : vec(), mut(), cond(), max_size_(256), use_bound_(false) {}
+	SafeVector(const SafeVector& orig) : vec(orig.vec), mut(), cond(),
+		max_size_(orig.max_size_), use_bound_(orig.use_bound_) {}
 	~SafeVector() {}
 
-	void insert(string in, const int index);
-	void push_back(string in);
-	void pop_back();
+	void set_max_size(size_t n);
+	bool push_back(string in);
+	string pop_front();
+	string front();
 	size_t size();
 	string& operator[](const int index);
-	string& back();
-	vector<string>::iterator begin();
-	vector<string>::iterator end();
 	vector<string> toVector();
 
 private:
 	vector<string> vec;
-	mutex mut;
+	mutable mutex mut;
 	condition_variable cond;
+	size_t max_size_;
+	bool use_bound_;
 };
-
-#endif /* SAFEVECTOR_HPP */

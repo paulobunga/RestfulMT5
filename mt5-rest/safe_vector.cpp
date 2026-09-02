@@ -3,52 +3,49 @@
 #include <utility>
 #include "safe_vector.hpp"
 
-void SafeVector::insert(string in, const int index)
-{
+void SafeVector::set_max_size(size_t n) {
 	lock_guard<mutex> lock(mut);
-	vec[index] = move(in);
-	cond.notify_one();
+	max_size_ = n;
+	use_bound_ = (n > 0);
 }
 
-void SafeVector::push_back(string in)
-{
+bool SafeVector::push_back(string in) {
 	lock_guard<mutex> lock(mut);
+	if (use_bound_ && vec.size() >= max_size_)
+		return false;
 	vec.push_back(move(in));
 	cond.notify_one();
+	return true;
 }
 
-void SafeVector::pop_back()
-{
+string SafeVector::pop_front() {
 	lock_guard<mutex> lock(mut);
-	vec.pop_back();
+	if (vec.empty())
+		return string();
+	string out = move(vec.front());
+	vec.erase(vec.begin());
 	cond.notify_one();
+	return out;
 }
 
-string& SafeVector::back()
-{
-	return vec.back();
+string SafeVector::front() {
+	lock_guard<mutex> lock(mut);
+	if (vec.empty())
+		return string();
+	return vec.front();
 }
 
 size_t SafeVector::size() {
+	lock_guard<mutex> lock(mut);
 	return vec.size();
 }
 
-string& SafeVector::operator[](const int index)
-{
+string& SafeVector::operator[](const int index) {
+	lock_guard<mutex> lock(mut);
 	return vec[index];
 }
 
-vector<string>::iterator SafeVector::begin()
-{
-	return vec.begin();
-}
-
-vector<string>::iterator SafeVector::end()
-{
-	return vec.end();
-}
-
-vector<string> SafeVector::toVector()
-{
+vector<string> SafeVector::toVector() {
+	lock_guard<mutex> lock(mut);
 	return vec;
 }
