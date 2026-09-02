@@ -61,7 +61,7 @@ private:
    string getTransaction(ulong ticket);
    string tradingModule(CJAVal &dataObject);
    string getCandleData(CJAVal &dataObject);
-   string orderDoneOrError(bool error, string funcName, CTrade &trade);
+   string orderDoneOrError(bool error, string funcName, CTrade &trade, string pSymbol="", string pType="");
    string actionDoneOrError(int lastError, string funcName);
    string fromDateTime(datetime param);
    datetime parseFromParam(string s);
@@ -726,7 +726,7 @@ string CRestApi::tradingModule(CJAVal &dataObject) {
       string   actionType = dataObject["actionType"].ToStr();
       string   symbol=dataObject["symbol"].ToStr();
       // Check if symbol the same
-      if(!(symbol==_Symbol)) actionDoneOrError(ERR_MARKET_UNKNOWN_SYMBOL, __FUNCTION__);
+      if(!(symbol==_Symbol)) return actionDoneOrError(ERR_MARKET_UNKNOWN_SYMBOL, __FUNCTION__);
       
       int      idNimber=(int)dataObject["id"].ToInt();
       double   volume=dataObject["volume"].ToDbl();
@@ -751,7 +751,7 @@ string CRestApi::tradingModule(CJAVal &dataObject) {
             if(orderType==ORDER_TYPE_SELL) price=SymbolInfoDouble(symbol,SYMBOL_BID);
             
             if(trade.PositionOpen(symbol,orderType,volume,price,SL,TP,comment)) {
-               return orderDoneOrError(false, __FUNCTION__, trade);
+               return orderDoneOrError(false, __FUNCTION__, trade, symbol, actionType);
              }
            }
       
@@ -761,59 +761,59 @@ string CRestApi::tradingModule(CJAVal &dataObject) {
             if(actionType=="ORDER_TYPE_BUY_LIMIT") 
                {
                   if(trade.BuyLimit(volume,price,symbol,SL,TP,ORDER_TIME_GTC,expiration,comment))
-                     {return orderDoneOrError(false, __FUNCTION__, trade);}
+                     {return orderDoneOrError(false, __FUNCTION__, trade, symbol, actionType);}
                }
             else if(actionType=="ORDER_TYPE_SELL_LIMIT")
                {
                   if(trade.SellLimit(volume,price,symbol,SL,TP,ORDER_TIME_GTC,expiration,comment))
-                     {return orderDoneOrError(false, __FUNCTION__, trade);}
+                     {return orderDoneOrError(false, __FUNCTION__, trade, symbol, actionType);}
                }
             else if(actionType=="ORDER_TYPE_BUY_STOP")
                {
                   if(trade.BuyStop(volume,price,symbol,SL,TP,ORDER_TIME_GTC,expiration,comment))
-                     {return orderDoneOrError(false, __FUNCTION__, trade);}
+                     {return orderDoneOrError(false, __FUNCTION__, trade, symbol, actionType);}
                }
             else if (actionType=="ORDER_TYPE_SELL_STOP")
                {
                   if(trade.SellStop(volume,price,symbol,SL,TP,ORDER_TIME_GTC,expiration,comment))
-                     {return orderDoneOrError(false, __FUNCTION__, trade);}
+                     {return orderDoneOrError(false, __FUNCTION__, trade, symbol, actionType);}
                }
           }
       // Position modify    
       else if(actionType=="POSITION_MODIFY")
          {
             if(trade.PositionModify(idNimber,SL,TP)) 
-               {return orderDoneOrError(false, __FUNCTION__, trade);}
+               {return orderDoneOrError(false, __FUNCTION__, trade, symbol, "");}
          }
       // Position close partial   
       else if(actionType=="POSITION_PARTIAL")
          {
             if(trade.PositionClosePartial(idNimber,volume)) 
-               {return orderDoneOrError(false, __FUNCTION__, trade);}
+               {return orderDoneOrError(false, __FUNCTION__, trade, symbol, "");}
          }
       // Position close by id       
       else if(actionType=="POSITION_CLOSE_ID")
          {
             if(trade.PositionClose(idNimber)) 
-               {return orderDoneOrError(false, __FUNCTION__, trade);}
+               {return orderDoneOrError(false, __FUNCTION__, trade, symbol, "");}
          }
       // Position close by symbol
       else if(actionType=="POSITION_CLOSE_SYMBOL")
          {
             if(trade.PositionClose(symbol)) 
-               {return orderDoneOrError(false, __FUNCTION__, trade);}
+               {return orderDoneOrError(false, __FUNCTION__, trade, symbol, "");}
          }
       // Modify pending order
       else if(actionType=="ORDER_MODIFY")
          {  
             if(trade.OrderModify(idNimber,price,SL,TP,ORDER_TIME_GTC,expiration))
-               {return orderDoneOrError(false, __FUNCTION__, trade);}
+               {return orderDoneOrError(false, __FUNCTION__, trade, symbol, "");}
         }
       // Cancel pending order  
       else if(actionType=="ORDER_CANCEL")
          {
             if(trade.OrderDelete(idNimber))
-               {return orderDoneOrError(false, __FUNCTION__, trade);}
+               {return orderDoneOrError(false, __FUNCTION__, trade, symbol, "");}
          }
       // Action type dosen't exist
       else return actionDoneOrError(65538, __FUNCTION__);
@@ -873,21 +873,45 @@ void CRestApi::OnTradeTransaction(const MqlTradeTransaction &trans,
         }
 }
 
-string CRestApi::orderDoneOrError(bool error, string funcName, CTrade &trade) {
+string CRestApi::orderDoneOrError(bool error, string funcName, CTrade &trade, string pSymbol="", string pType="") {
       CJAVal conf;
-      
-      conf["error"]=(int) trade.ResultRetcode();
-      conf["description"]=(string) CRestApi::GetRetcodeID(trade.ResultRetcode());
-      conf["order_id"]=(int) trade.ResultOrder();
-      conf["volume"]=(double) trade.ResultVolume();
-      conf["price"]=(double) trade.ResultPrice();
-      conf["bid"]=(double) trade.ResultBid();
-      conf["ask"]=(double) trade.ResultAsk();
-      conf["function"]=(string) funcName;
-      
+      const MqlTradeResult &r = trade.Result();
+
+      ulong deal       = r.deal;
+      ulong positionId = 0;
+      // Best-effort position id from the resulting deal
+      if(deal > 0) {
+         positionId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+      }
+      // Fallback: scan open positions for the symbol
+      if(positionId == 0 && pSymbol != "") {
+         for(int i = PositionsTotal()-1; i >= 0; i--) {
+            if(PositionGetSymbol(i) == pSymbol) {
+               positionId = (ulong)PositionGetInteger(POSITION_IDENTIFIER);
+               break;
+            }
+         }
+      }
+
+      conf["retcode"]          = (int)r.retcode;
+      conf["retcode_external"] = (int)r.retcode_external;
+      conf["order_id"]         = (ulong)r.order;       // real order ticket
+      conf["deal_id"]          = deal;                 // real deal ticket (0 if none)
+      conf["position_id"]      = positionId;           // best-effort
+      conf["symbol"]           = pSymbol;
+      conf["type"]             = pType;
+      conf["price"]            = r.price;              // real fill price
+      conf["volume"]           = r.volume;             // real filled volume
+      conf["bid"]              = r.bid;
+      conf["ask"]              = r.ask;
+      conf["time"]             = fromDateTime(TimeTradeServer());
+      conf["error"]            = (int)r.retcode;       // legacy
+      conf["description"]      = (string)CRestApi::GetRetcodeID(r.retcode);
+      conf["function"]         = (string)funcName;
+
       string t=conf.Serialize();
       if(debug) Print(t);
-      
+
       return t;
 }
 
