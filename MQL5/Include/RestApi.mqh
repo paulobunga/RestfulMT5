@@ -977,8 +977,8 @@ string CRestApi::orderDoneOrError(bool error, string funcName, CTrade &trade, st
       conf["retcode"]          = (int)r.retcode;
       conf["retcode_external"] = (int)r.retcode_external;
       conf["order_id"]         = (long)r.order;       // real order ticket
-      conf["deal_id"]          = deal;                 // real deal ticket (0 if none)
-      conf["position_id"]      = positionId;           // best-effort
+      conf["deal_id"]          = (long)deal;           // real deal ticket (0 if none)
+      conf["position_id"]      = (long)positionId;     // best-effort
       conf["symbol"]           = pSymbol;
       conf["type"]             = pType;
       conf["price"]            = r.price;              // real fill price
