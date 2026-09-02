@@ -54,7 +54,7 @@ private:
    string getPosition(ulong ticket);   
    string getBalanceInfo();
    string getOrders();
-   string getOrdersHistory();
+   string getOrdersHistory(CJAVal &dataObject);
    string getOrder(ulong ticket);
    string getOrderHistory(ulong ticket);
    string getTransactions(CJAVal &dataObject);
@@ -191,10 +191,10 @@ void CRestApi::Processing(void) {
          id = jCommand.HasKey("id");
          Print(id);
          
-         if(id != NULL)      
-            response = getOrderHistory(id.ToInt());
-         else
-            response = getOrdersHistory();
+if(id != NULL)      
+             response = getOrderHistory(id.ToInt());
+          else
+             response = getOrdersHistory(jCommand);
       }            
       
       if(action == "positions") {
@@ -581,47 +581,76 @@ string CRestApi::getOrders() {
  }
  
  
- string CRestApi::getOrdersHistory() {
+string CRestApi::getOrdersHistory(CJAVal &dataObject) {
       ResetLastError();
 
-      ulong ticket;      
-      CJAVal data, order;
-      
-      // Get orders
-      HistorySelect(0,TimeCurrent());
-      int ordersTotal = HistoryOrdersTotal();
-      // Create empty array if no orders
-      if(!ordersTotal) {
-        data.Add(order);
-      }
-            
-      for(int i=0;i<ordersTotal;i++) {
+      string   symbolFilter = dataObject["symbol"].ToStr();
+      ulong    positionId   = (ulong)dataObject["position_id"].ToInt();
+      int      offset       = (int)MathMax(0, dataObject["offset"].ToInt());
+      int      limit        = (int)dataObject["limit"].ToInt();
+      if(limit <= 0) limit = 100;
+      if(limit > 500) limit = 500;
+      datetime fromD = parseFromParam(dataObject["from"].ToStr());
+      datetime toD   = parseToParam(dataObject["to"].ToStr());
 
-         if((ticket=HistoryOrderGetTicket(i))>0) {   
-            order["id"]= (int)ticket;
-            order["open"]=HistoryOrderGetDouble(ticket,ORDER_PRICE_OPEN);         
-            order["symbol"]=HistoryOrderGetString(ticket,ORDER_SYMBOL);
-            
-            order["state"]=EnumToString(ENUM_ORDER_STATE(HistoryOrderGetInteger(ticket, ORDER_STATE)));
-            order["magic"]=HistoryOrderGetInteger(ticket, ORDER_MAGIC); 
-            order["type"]=EnumToString(ENUM_ORDER_TYPE(HistoryOrderGetInteger(ticket, ORDER_TYPE)));
-            order["time_setup"]=fromDateTime(HistoryOrderGetInteger(ticket, ORDER_TIME_SETUP));
-            order["time_done"]=fromDateTime(HistoryOrderGetInteger(ticket, ORDER_TIME_DONE));
-            
-            order["stoploss"]=HistoryOrderGetDouble(ticket, ORDER_SL);
-            order["takeprofit"]=HistoryOrderGetDouble(ticket, ORDER_TP);
-            order["volume"]=HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL);
-            order["position_id"]=HistoryOrderGetInteger(ticket, ORDER_POSITION_ID);
-         
-            data.Add(order);
-          } 
-       }
-         
-       string t=data.Serialize();
-       if(debug) {Print(t);}
-       
-       return t;
- }
+      CJAVal data, order;
+      ulong  collected[];
+      int    collectedCount = 0;
+
+      if(HistorySelect(fromD, toD)) {
+         int ordersTotal = HistoryOrdersTotal();
+         ArrayResize(collected, ordersTotal > 0 ? ordersTotal : 1);
+
+         for(int i = ordersTotal-1; i >= 0; i--) {    // newest first
+            ulong ticket = HistoryOrderGetTicket(i);
+            if(ticket == 0) continue;
+            bool matchPos = (positionId == 0) || ((ulong)HistoryOrderGetInteger(ticket, ORDER_POSITION_ID) == positionId);
+            bool matchSym = (symbolFilter == "") || (HistoryOrderGetString(ticket, ORDER_SYMBOL) == symbolFilter);
+            if(matchPos && matchSym)
+               collected[collectedCount++] = ticket;
+         }
+      }
+
+      int total = collectedCount;
+      int start = MathMin(offset, total);
+      int end   = MathMin(offset + limit, total);
+
+      for(int k = start; k < end; k++) {
+         ulong ticket = collected[k];
+         int state   = (int)HistoryOrderGetInteger(ticket, ORDER_STATE);
+         double fill = (state == (int)ORDER_STATE_FILLED)
+                          ? HistoryOrderGetDouble(ticket, ORDER_PRICE_CURRENT)
+                          : 0;
+
+         order["id"]          = (int)ticket;
+         order["open"]        = HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN);
+         order["fill"]        = fill;
+         order["symbol"]      = HistoryOrderGetString(ticket, ORDER_SYMBOL);
+         order["state"]       = EnumToString((ENUM_ORDER_STATE)state);
+         order["magic"]       = HistoryOrderGetInteger(ticket, ORDER_MAGIC);
+         order["type"]        = EnumToString((ENUM_ORDER_TYPE)HistoryOrderGetInteger(ticket, ORDER_TYPE));
+         order["type_filling"]= EnumToString((ENUM_ORDER_TYPE_FILLING)HistoryOrderGetInteger(ticket, ORDER_TYPE_FILLING));
+         order["time_setup"]  = fromDateTime(HistoryOrderGetInteger(ticket, ORDER_TIME_SETUP));
+         order["time_done"]   = fromDateTime(HistoryOrderGetInteger(ticket, ORDER_TIME_DONE));
+         order["time_expiration"] = fromDateTime(HistoryOrderGetInteger(ticket, ORDER_TIME_EXPIRATION));
+         order["stoploss"]    = HistoryOrderGetDouble(ticket, ORDER_SL);
+         order["takeprofit"]  = HistoryOrderGetDouble(ticket, ORDER_TP);
+         order["volume"]      = HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL);
+         order["position_id"] = HistoryOrderGetInteger(ticket, ORDER_POSITION_ID);
+         order["reason"]      = orderReasonString((int)HistoryOrderGetInteger(ticket, ORDER_REASON));
+         order["comment"]     = HistoryOrderGetString(ticket, ORDER_COMMENT);
+         data.Add(order);
+      }
+
+      CJAVal out;
+      out["orders"].Set(data);
+      out["total"] = (ulong)total;
+
+      string t = out.Serialize();
+      if(debug) {Print(t);}
+
+      return t;
+}
 
 
 //+------------------------------------------------------------------+
