@@ -36,6 +36,7 @@ All endpoints require an `Authorization` header with your token (`Authorization:
 |----------|--------|-------------|
 | `/health` | GET | Health check: uptime, queue depth, MQL5 connection status. Does **not** require `Authorization`. |
 | `/version` | GET | Protocol version, e.g. `{"version":"1", ...}`. Does **not** require `Authorization`. |
+| `/ping` | GET | Liveness probe: `pong`, `time`, `terminal_build`, `deals_total`, `orders_total`, `positions_total`, `server`, `account` (requires `Authorization`). |
 | `OPTIONS` (any path) | OPTIONS | CORS preflight. Returns `Allow: GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD`. `HEAD` is also supported. |
 
 Every response includes CORS headers (`Access-Control-Allow-Origin: *`). On errors the server returns a structured JSON body:
@@ -57,18 +58,20 @@ Common HTTP status codes include `401` (unauthorized), `413` (request too large)
 | `/info` | GET | Account details, balance, equity, margin |
 | `/balance` | GET | Balance, equity, margin info |
 | `/account` | GET | Full account properties (company, currency, server, name, number, leverage, balance, equity, margin, margin_free, margin_level, profit, credit, stopout, trade settings, etc.) |
-| `/symbols` | GET | List all tradable symbol names |
-| `/symbols/{name}` | GET | Full symbol info including ask/bid prices, session_open, session_close, spread, swap_long, swap_short, digits, stops level, freeze level, exempt mode, filling mode |
+| `/symbols` | GET | List all symbols with lightweight specs (name, digits, point, spread, volumes, trade_mode, sessions) |
+| `/symbols/{name}` | GET | Full symbol info (ask/bid, tick_size/value, contract_size, volumes, spread, digits, swap_long/short, trade_mode/exemode/filling, stops/freeze, point, ticks_book_depth, margin/profit/trade/base/quote currencies, calc/swap/expiration modes, volume_limit, margins, sessions) |
 | `/tick/{symbol}` | GET | Latest tick: bid, ask, last, volume, time, time_msc, flags |
 | `/positions_pnl` | GET | Aggregate realized + unrealized PnL grouped per symbol (profit, swap) |
 | `/margin/{symbol}` | GET | Margin calculation (default: 0.01 buy lot) |
 | `/account_history` | GET | Account deals history: total PnL grouped by day, via `from`/`to` timestamps |
 
+> **Note:** `/info` `orders_total` and `/balance` `orders_total`/`deal_total` are **last-1-day** counts (bounded `HistorySelect`). Full all-time totals are available via `/ping` (`deals_total`/`orders_total`/`positions_total`) and via the paginated `total` field on `/deals` and `/history`.
+
 ### Positions & Orders
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/positions` | GET | List all open positions |
+| `/positions` | GET | List all open positions (each includes `profit`, `swap`, `comment`, `price_current`) |
 | `/positions/{id}` | GET | Get position by ID |
 | `/positions/{id}` | DELETE | Close position by ID (REST-style shortcut) |
 | `/positions/{id}` | PUT/PATCH | Modify position (stoploss/takeprofit) |
@@ -76,9 +79,9 @@ Common HTTP status codes include `401` (unauthorized), `413` (request too large)
 | `/orders/{id}` | GET | Get order by ID |
 | `/orders/{id}` | DELETE | Cancel pending order by ID (REST-style shortcut) |
 | `/orders/{id}` | PUT/PATCH | Modify pending order |
-| `/history` | GET | List order history |
+| `/history` | GET | List order history (query: `offset`, `limit`, `position_id`, `symbol`, `from`, `to`) — returns `{orders:[...], total:N}` with `fill` price for filled orders |
 | `/history/{id}` | GET | Get history order by ID |
-| `/deals` | GET | List deals (query: `offset`, `limit`) |
+| `/deals` | GET | List deals (query: `offset`, `limit`, `position_id`, `symbol`, `from`, `to`) — returns `{deals:[...], total:N}` with `entry`/`reason`/`swap`/`comment` |
 | `/deals/{id}` | GET | Get deal by ID |
 
 ### Historical Data (OHLCV)
@@ -214,16 +217,25 @@ Execute multiple trade operations in one request to `/trade/batch`. The body wra
 
 ```json
 {
-  "error": 10009,
-  "description": "TRADE_RETCODE_DONE",
+  "retcode": 10009,
+  "retcode_external": 0,
   "order_id": 405895526,
-  "volume": 0.1,
+  "deal_id": 405895527,
+  "position_id": 405895527,
+  "symbol": "EURUSD",
+  "type": "ORDER_TYPE_BUY",
   "price": 1.13047,
+  "volume": 0.1,
   "bid": 1.13038,
   "ask": 1.13047,
+  "time": "2026-09-02T12:00:00.000Z",
+  "error": 10009,
+  "description": "TRADE_RETCODE_DONE",
   "function": "CRestApi::tradingModule"
 }
 ```
+
+`retcode`/`retcode_external`/`order_id`/`deal_id`/`position_id`/`symbol`/`type`/`price`/`time` are the real fill tickets; `error`/`description` are the legacy aliases. `position_id` is best-effort (0 when not applicable).
 
 **Common Return Codes:**
 - `10009` - TRADE_RETCODE_DONE (Success)
