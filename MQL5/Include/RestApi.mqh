@@ -259,6 +259,78 @@ void CRestApi::Processing(void) {
          response = tradeBatch(jCommand);
       }
 
+      //--- DELETE /orders/{id}
+      if(action == "order_delete") {
+         CJAVal *oid = jCommand.HasKey("id", jtSTR);
+         if(oid != NULL) {
+            int ticket = (int)StringToInteger(oid.ToStr());
+            CTrade trade;
+            if(trade.OrderDelete(ticket))
+               response = orderDoneOrError(false, __FUNCTION__, trade);
+            else
+               response = orderDoneOrError(true, __FUNCTION__, trade);
+         }
+      }
+
+      //--- DELETE /positions/{id}
+      if(action == "position_delete") {
+         CJAVal *oid = jCommand.HasKey("id", jtSTR);
+         if(oid != NULL) {
+            int ticket = (int)StringToInteger(oid.ToStr());
+            CTrade trade;
+            if(trade.PositionClose(ticket))
+               response = orderDoneOrError(false, __FUNCTION__, trade);
+            else
+               response = orderDoneOrError(true, __FUNCTION__, trade);
+         }
+      }
+
+      //--- PUT/PATCH /orders/{id}
+      if(action == "order_modify") {
+         CJAVal *oid = jCommand.HasKey("id", jtSTR);
+         if(oid != NULL) {
+            int ticket = (int)StringToInteger(oid.ToStr());
+            CTrade trade;
+            double   price=0, SL=0, TP=0;
+            datetime expiration=TimeTradeServer()+PeriodSeconds(PERIOD_D1);
+
+            CJAVal *p = jCommand.HasKey("price", jtDOUBLE);
+            if(p != NULL) price = NormalizeDouble(p.ToDbl(), _Digits);
+
+            CJAVal *s = jCommand.HasKey("stoploss", jtDOUBLE);
+            if(s != NULL) SL = s.ToDbl();
+
+            CJAVal *t = jCommand.HasKey("takeprofit", jtDOUBLE);
+            if(t != NULL) TP = t.ToDbl();
+
+            if(trade.OrderModify(ticket, price, SL, TP, ORDER_TIME_GTC, expiration))
+               response = orderDoneOrError(false, __FUNCTION__, trade);
+            else
+               response = orderDoneOrError(true, __FUNCTION__, trade);
+         }
+      }
+
+      //--- PUT/PATCH /positions/{id}
+      if(action == "position_modify") {
+         CJAVal *oid = jCommand.HasKey("id", jtSTR);
+         if(oid != NULL) {
+            int ticket = (int)StringToInteger(oid.ToStr());
+            CTrade trade;
+            double SL=0, TP=0;
+
+            CJAVal *s = jCommand.HasKey("stoploss", jtDOUBLE);
+            if(s != NULL) SL = s.ToDbl();
+
+            CJAVal *t = jCommand.HasKey("takeprofit", jtDOUBLE);
+            if(t != NULL) TP = t.ToDbl();
+
+            if(trade.PositionModify(ticket, SL, TP))
+               response = orderDoneOrError(false, __FUNCTION__, trade);
+            else
+               response = orderDoneOrError(true, __FUNCTION__, trade);
+         }
+      }
+
       if(StringLen(response) < 1) {
          response = notImpemented(action);
       } 
