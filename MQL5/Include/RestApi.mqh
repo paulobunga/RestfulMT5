@@ -1175,7 +1175,23 @@ string CRestApi::getSymbols() {
    int total = SymbolsTotal(false);
    for(int i = 0; i < total; i++) {
       CJAVal item;
-      item["name"] = SymbolName(i, false);
+      string name = SymbolName(i, false);
+      if(!SymbolSelect(name, true)) {
+         item["name"] = name;
+         data.Add(item);
+         continue;
+      }
+      item["name"]        = name;
+      item["digits"]      = (int)SymbolInfoInteger(name, SYMBOL_DIGITS);
+      item["point"]       = (double)SymbolInfoDouble(name, SYMBOL_POINT);
+      item["spread"]      = (int)SymbolInfoInteger(name, SYMBOL_SPREAD);
+      item["min_volume"]  = SymbolInfoDouble(name, SYMBOL_VOLUME_MIN);
+      item["max_volume"]  = SymbolInfoDouble(name, SYMBOL_VOLUME_MAX);
+      item["volume_step"] = SymbolInfoDouble(name, SYMBOL_VOLUME_STEP);
+      item["trade_mode"]  = EnumToString((ENUM_SYMBOL_TRADE_MODE)SymbolInfoInteger(name, SYMBOL_TRADE_MODE));
+      item["trade_exemode"] = EnumToString((ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(name, SYMBOL_TRADE_EXEMODE));
+      item["session_open"]  = (int)SymbolInfoInteger(name, SYMBOL_SESSION_OPEN);
+      item["session_close"] = (int)SymbolInfoInteger(name, SYMBOL_SESSION_CLOSE);
       data.Add(item);
    }
 
@@ -1215,6 +1231,21 @@ string CRestApi::getSymbolInfoFull(string name) {
    info["trade_filling"] = SymbolInfoInteger(name, SYMBOL_TRADE_FILLING);
    info["trade_stops_level"] = (int)SymbolInfoInteger(name, SYMBOL_TRADE_STOPS_LEVEL);
    info["trade_freeze_level"] = (int)SymbolInfoInteger(name, SYMBOL_TRADE_FREEZE_LEVEL);
+
+   info["point"]             = (double)SymbolInfoDouble(name, SYMBOL_POINT);
+   info["ticks_book_depth"]  = (int)SymbolInfoInteger(name, SYMBOL_TICKS_BOOKDEPTH);
+   info["margin_currency"]   = SymbolInfoString(name, SYMBOL_CURRENCY_MARGIN);
+   info["profit_currency"]   = SymbolInfoString(name, SYMBOL_CURRENCY_PROFIT);
+   info["trade_currency"]    = SymbolInfoString(name, SYMBOL_CURRENCY_TRADE);
+   info["base_currency"]     = SymbolInfoString(name, SYMBOL_CURRENCY_BASE);
+   info["quote_currency"]    = SymbolInfoString(name, SYMBOL_CURRENCY_QUOTE);
+   info["trade_calc_mode"]   = EnumToString((ENUM_SYMBOL_TRADE_CALC_MODE)SymbolInfoInteger(name, SYMBOL_TRADE_CALC_MODE));
+   info["swap_mode"]         = EnumToString((ENUM_SYMBOL_SWAP_MODE)SymbolInfoInteger(name, SYMBOL_SWAP_MODE));
+   info["swap_rollover3days"]= (int)SymbolInfoInteger(name, SYMBOL_SWAP_ROLLOVER3DAYS);
+   info["expiration_mode"]   = EnumToString((ENUM_SYMBOL_EXPIRATION_MODE)SymbolInfoInteger(name, SYMBOL_EXPIRATION_MODE));
+   info["volume_limit"]      = SymbolInfoDouble(name, SYMBOL_VOLUME_LIMIT);
+   info["margin_initial"]    = SymbolInfoDouble(name, SYMBOL_MARGIN_INITIAL);
+   info["margin_maintenance"]= SymbolInfoDouble(name, SYMBOL_MARGIN_MAINTENANCE);
 
    long sessionOpen = SymbolInfoInteger(name, SYMBOL_SESSION_OPEN);
    long sessionClose = SymbolInfoInteger(name, SYMBOL_SESSION_CLOSE);
