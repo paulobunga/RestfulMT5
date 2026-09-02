@@ -13,6 +13,25 @@
 using namespace web;
 using namespace http;
 
+static long long g_counter = 0;
+static std::mutex g_counter_mutex;
+
+utility::string_t MicroserviceController::makeRequestId() {
+	std::lock_guard<std::mutex> lock(g_counter_mutex);
+	g_counter++;
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	wchar_t buf[64];
+	swprintf_s(buf, 64, L"%04d%02d%02d%02d%02d%02d%03d-%lld",
+		st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+		st.wMilliseconds, g_counter);
+	return utility::string_t(buf);
+}
+
+const utility::string_t MicroserviceController::protocolVersion() {
+	return U("1");
+}
+
 void MicroserviceController::initRestOpHandlers() {
 	_listener.support(methods::GET, std::bind(&MicroserviceController::handleGet, this, std::placeholders::_1));
 	_listener.support(methods::PUT, std::bind(&MicroserviceController::handlePut, this, std::placeholders::_1));

@@ -65,6 +65,8 @@ public:
 
 private:
 	static json::value responseNotImpl(const http::method & method);
+	static utility::string_t makeRequestId();
+	static const utility::string_t protocolVersion();
 	SafeVector commands;
 	SafeMap commandResponses;
 	string_t callback_url;
