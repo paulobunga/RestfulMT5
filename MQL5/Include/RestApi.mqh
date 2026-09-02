@@ -898,7 +898,7 @@ string CRestApi::tradingModule(CJAVal &dataObject) {
       else return actionDoneOrError(65538, __FUNCTION__);
       
       // Order is not compleated
-      return orderDoneOrError(true, __FUNCTION__, trade);
+      return orderDoneOrError(true, __FUNCTION__, trade, symbol, actionType);
    }
 
 //+------------------------------------------------------------------+ 
