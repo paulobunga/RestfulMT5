@@ -29,3 +29,5 @@ private:
 	size_t max_size_;
 	bool use_bound_;
 };
+
+#endif

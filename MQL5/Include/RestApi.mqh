@@ -804,8 +804,9 @@ string CRestApi::tradingModule(CJAVal &dataObject) {
       
       string   actionType = dataObject["actionType"].ToStr();
       string   symbol=dataObject["symbol"].ToStr();
-      // Check if symbol the same
-      if(!(symbol==_Symbol)) return actionDoneOrError(ERR_MARKET_UNKNOWN_SYMBOL, __FUNCTION__);
+      // Ensure the symbol exists and is added to Market Watch before trading
+      if(!SymbolSelect(symbol, true))
+         return actionDoneOrError(ERR_MARKET_UNKNOWN_SYMBOL, __FUNCTION__);
       
       int      idNimber=(int)dataObject["id"].ToInt();
       double   volume=dataObject["volume"].ToDbl();

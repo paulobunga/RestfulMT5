@@ -460,7 +460,7 @@ void MicroserviceController::handlePost(http_request message) {
 			return;
 		}
 
-		message.extract_utf8string(true).then([=](std::string body) {
+		message.extract_utf8string(true).then([&](std::string body) {
 			if (body.length() < 1) {
 				throw exception("POST body is empty");
 			}
@@ -718,7 +718,7 @@ void MicroserviceController::handlePut(http_request message) {
 
 		request_id = makeRequestId();
 
-		message.extract_utf8string(true).then([=](std::string body) {
+		message.extract_utf8string(true).then([&](std::string body) {
 			if (body.length() < 1) {
 				throw exception("PUT body is empty");
 			}
@@ -847,7 +847,7 @@ void MicroserviceController::handlePatch(http_request message) {
 
 		request_id = makeRequestId();
 
-		message.extract_utf8string(true).then([=](std::string body) {
+		message.extract_utf8string(true).then([&](std::string body) {
 			if (body.length() < 1) {
 				throw exception("PATCH body is empty");
 			}
