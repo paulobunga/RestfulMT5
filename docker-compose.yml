@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  mt5-rest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mt5-rest-server
+    restart: unless-stopped
+    ports:
+      - "${REST_PORT:-6542}:6542"
+      - "5900:5900"
+    environment:
+      - MT5_LOGIN=${MT5_LOGIN}
+      - MT5_PASSWORD=${MT5_PASSWORD}
+      - MT5_SERVER=${MT5_SERVER}
+      - REST_PORT=${REST_PORT:-6542}
+      - REST_AUTH_TOKEN=${REST_AUTH_TOKEN:-your-secret-token}
+      - VNC_PASSWORD=${VNC_PASSWORD:-root}
+    volumes:
+      - mt5-data:/root/.wine/drive_c/Program Files/MetaTrader 5
+
+volumes:
+  mt5-data:
