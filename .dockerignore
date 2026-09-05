@@ -1,0 +1,10 @@
+.git
+.gitignore
+x64/
+Debug/
+Release/
+*.user
+*.suo
+.vs/
+.venv/
+docs/

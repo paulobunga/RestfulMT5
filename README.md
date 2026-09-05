@@ -5,9 +5,40 @@ Turns MetaTrader 5 into a REST API server for algorithmic trading.
 ## Requirements
 
 - MetaTrader 5 (64-bit)
-- Visual C++ Redistributable 2017: https://aka.ms/vs/15/release/vc_redist.x64.exe
+- Visual C++ Redistributable 2017: https://aka.ms/vs/15/release/vc_redist.x64.exe (for bare-metal Windows installation)
+- Docker & Docker Compose (for containerized Linux execution)
 
-## Installation
+## Installation & Running with Docker
+
+You can run MetaTrader 5 and `mt5-rest` inside a Linux Docker container powered by Wine, Xvfb, and VNC.
+
+### Quick Start with Docker Compose
+
+1. Copy `.env.example` to `.env` and fill in your MetaTrader credentials:
+   ```bash
+   cp .env.example .env
+   ```
+2. Edit `.env` parameters:
+   - `MT5_LOGIN`: Account number
+   - `MT5_PASSWORD`: Account password
+   - `MT5_SERVER`: Broker server name
+   - `REST_PORT`: REST API port (default `6542`)
+   - `REST_AUTH_TOKEN`: Secret token for API authentication
+   - `VNC_PASSWORD`: VNC viewer password (default `root`)
+
+3. Start the container:
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Connect via VNC**: Open any VNC client and connect to `YOUR_SERVER_IP:5900` with password `root` (or custom `VNC_PASSWORD`) to view the MetaTrader 5 terminal GUI.
+
+5. **Test REST API**:
+   ```bash
+   curl -H "Authorization: your-secret-token" "http://localhost:6542/health"
+   ```
+
+## Standard Installation (Windows Bare-Metal)
 
 1. Clone repo to any folder on your PC
 2. Copy `MQL5` folder to MT5 Data folder (`File → Open Data Folder` or `Ctrl+Shift+D`)
